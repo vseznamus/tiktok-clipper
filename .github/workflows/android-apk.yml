@@ -41,9 +41,11 @@ jobs:
       - name: Ошибки сборки (кратко)
         if: failure()
         run: |
-          grep -nE "error:|Error:|FAILED|What went wrong|CMake Error|undefined reference|fatal|Could not|not found|> " "$RUNNER_TEMP/build.log" \
-            | grep -vE "^[0-9]+:\s*$" | head -40 | while IFS= read -r l; do echo "::error::${l:0:900}"; done
-          tail -n 25 "$RUNNER_TEMP/build.log" | while IFS= read -r l; do echo "::warning::${l:0:900}"; done
+          L="$RUNNER_TEMP/build.log"
+          enc() { sed -e 's/%/%25/g' | awk '{printf "%s%%0A", substr($0,1,300)}'; }
+          echo "::error title=what went wrong::$(grep -A25 'What went wrong' "$L" | head -60 | enc)"
+          echo "::error title=compiler::$(grep -E 'error:|CMake Error|undefined (reference|symbol)|fatal error' "$L" | head -30 | enc)"
+          echo "::error title=cmake::$(grep -B2 -A12 'CMake Error' "$L" | head -50 | enc)"
       - name: Переименование и проверка нативных библиотек
         run: |
           cp android/app/build/outputs/apk/release/app-release.apk Narezka.apk
