@@ -10,8 +10,8 @@ android {
         applicationId 'ru.tiktokclipper'
         minSdk 26          // Android 8.0
         targetSdk 34
-        versionCode 2
-        versionName '1.0.1'
+        versionCode 3
+        versionName '1.0.2'
         ndk {
             // телефоны: 64 и 32 бита ARM (распознавание речи Vosk — нативная библиотека)
             abiFilters 'arm64-v8a', 'armeabi-v7a'
