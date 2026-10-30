@@ -34,7 +34,16 @@ jobs:
         working-directory: android
         env:
           NAREZKA_KEY_PASSWORD: ${{ secrets.NAREZKA_KEY_PASSWORD }}
-        run: chmod +x gradlew && ./gradlew --no-daemon --stacktrace assembleRelease
+        run: |
+          chmod +x gradlew
+          set -o pipefail
+          ./gradlew --no-daemon --stacktrace assembleRelease 2>&1 | tee "$RUNNER_TEMP/build.log"
+      - name: Ошибки сборки (кратко)
+        if: failure()
+        run: |
+          grep -nE "error:|Error:|FAILED|What went wrong|CMake Error|undefined reference|fatal|Could not|not found|> " "$RUNNER_TEMP/build.log" \
+            | grep -vE "^[0-9]+:\s*$" | head -40 | while IFS= read -r l; do echo "::error::${l:0:900}"; done
+          tail -n 25 "$RUNNER_TEMP/build.log" | while IFS= read -r l; do echo "::warning::${l:0:900}"; done
       - name: Переименование и проверка нативных библиотек
         run: |
           cp android/app/build/outputs/apk/release/app-release.apk Narezka.apk
