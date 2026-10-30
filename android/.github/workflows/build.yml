@@ -1,0 +1,20 @@
+# Если в репозиторий GitHub загружена только папка android (как корень): Actions → «Сборка APK» → Run workflow.
+name: Сборка APK
+on:
+  workflow_dispatch:
+  push:
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - name: Сборка
+        run: chmod +x gradlew && ./gradlew --no-daemon assembleRelease
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tiktok-clipper-apk
+          path: app/build/outputs/apk/release/*.apk

@@ -1,0 +1,16 @@
+{
+  "name": "TikTok-нарезка",
+  "short_name": "Нарезка",
+  "description": "Нарезка клипов для TikTok и расписание публикаций",
+  "lang": "ru",
+  "start_url": "/#/today",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#111118",
+  "theme_color": "#111118",
+  "icons": [
+    {"src": "/static/icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable"},
+    {"src": "/static/icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable"}
+  ]
+}

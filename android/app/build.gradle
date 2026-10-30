@@ -1,0 +1,51 @@
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    namespace 'ru.tiktokclipper'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId 'ru.tiktokclipper'
+        minSdk 26          // Android 8.0
+        targetSdk 34
+        versionCode 1
+        versionName '1.0.0'
+        ndk {
+            // телефоны: 64 и 32 бита ARM (распознавание речи Vosk — нативная библиотека)
+            abiFilters 'arm64-v8a', 'armeabi-v7a'
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            // Подпись отладочным ключом, чтобы готовый APK сразу ставился на телефон.
+            // Для публикации в магазине замените на свой ключ.
+            signingConfig signingConfigs.debug
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_1_8
+        targetCompatibility JavaVersion.VERSION_1_8
+        encoding 'UTF-8'
+    }
+
+    packaging {
+        jniLibs {
+            useLegacyPackaging true
+        }
+    }
+
+    lint {
+        abortOnError false
+    }
+}
+
+dependencies {
+    // Офлайн-распознавание речи (Maven Central)
+    implementation 'com.alphacephei:vosk-android:0.3.47@aar'
+    implementation 'net.java.dev.jna:jna:5.13.0@aar'
+}

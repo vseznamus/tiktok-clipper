@@ -1,0 +1,40 @@
+# Запуск на компьютере, мини-ПК или VPS:   docker compose up -d --build
+# Пароль задаётся в файле .env (скопируйте .env.example в .env и впишите свой).
+#
+# Для VPS с доменом и https (нужно для кнопки «Поделиться» и установки как приложение):
+#   впишите DOMAIN в .env и запустите:   docker compose --profile https up -d --build
+services:
+  clipper:
+    build: .
+    image: tiktok-clipper:latest
+    restart: unless-stopped
+    ports:
+      - "${CLIPPER_PORT:-8080}:8080"
+    environment:
+      CLIPPER_TOKEN: ${CLIPPER_TOKEN:?Задайте пароль CLIPPER_TOKEN в файле .env (образец — .env.example)}
+      TWITCH_CLIENT_ID: ${TWITCH_CLIENT_ID:-}
+      TWITCH_CLIENT_SECRET: ${TWITCH_CLIENT_SECRET:-}
+    volumes:
+      - ./media:/media     # сюда кладите фильмы, серии, записи стримов (по папкам источников)
+      - ./clips:/clips     # здесь появляются готовые клипы
+      - ./data:/data       # настройки, расписание, очередь, модели распознавания
+
+  https:
+    image: caddy:2
+    profiles: ["https"]
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      DOMAIN: ${DOMAIN:-}
+    entrypoint: ["sh", "-c"]
+    command:
+      - 'test -n "$$DOMAIN" || { echo "Впишите DOMAIN в файл .env"; exit 1; }; exec caddy reverse-proxy --from "$$DOMAIN" --to clipper:8080'
+    volumes:
+      - caddy_data:/data
+    depends_on:
+      - clipper
+
+volumes:
+  caddy_data:

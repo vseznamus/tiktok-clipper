@@ -1,0 +1,127 @@
+{
+  "screens": {
+    "01_segodnya": {
+      "vw": 390,
+      "scrollWidth": 390,
+      "small": [],
+      "outside": [],
+      "title": "Сегодня"
+    },
+    "02_vybor_fayla": {
+      "vw": 390,
+      "scrollWidth": 390,
+      "small": [],
+      "outside": [],
+      "title": "Выбор момента"
+    },
+    "03_vybor_momenta": {
+      "vw": 390,
+      "scrollWidth": 390,
+      "small": [],
+      "outside": [],
+      "title": "Выбор момента"
+    },
+    "04_ramka_vebkamery": {
+      "vw": 390,
+      "scrollWidth": 390,
+      "small": [],
+      "outside": [],
+      "title": "Рамка вебкамеры"
+    },
+    "05_ochered": {
+      "vw": 390,
+      "scrollWidth": 390,
+      "small": [],
+      "outside": [],
+      "title": "Очередь"
+    },
+    "05b_ochered_gotovo": {
+      "vw": 390,
+      "scrollWidth": 390,
+      "small": [],
+      "outside": [],
+      "title": "Очередь"
+    },
+    "06_gotovyi_klip": {
+      "vw": 390,
+      "scrollWidth": 390,
+      "small": [],
+      "outside": [],
+      "title": "Готовый клип"
+    },
+    "07_posle_peresborki": {
+      "vw": 390,
+      "scrollWidth": 390,
+      "small": [],
+      "outside": [],
+      "title": "Готовый клип"
+    },
+    "08_segodnya_posle_publikacii": {
+      "vw": 390,
+      "scrollWidth": 390,
+      "small": [],
+      "outside": [],
+      "title": "Сегодня"
+    },
+    "09_klipy": {
+      "vw": 390,
+      "scrollWidth": 390,
+      "small": [],
+      "outside": [],
+      "title": "Клипы"
+    },
+    "10_nastroyki": {
+      "vw": 390,
+      "scrollWidth": 390,
+      "small": [],
+      "outside": [],
+      "title": "Настройки"
+    },
+    "11_novyi_istochnik": {
+      "vw": 390,
+      "scrollWidth": 390,
+      "small": [],
+      "outside": [],
+      "title": "Новый источник"
+    },
+    "12_ramka_pustoy_istochnik": {
+      "vw": 390,
+      "scrollWidth": 390,
+      "small": [],
+      "outside": [],
+      "title": "Рамка вебкамеры"
+    },
+    "13_rezhim_kadrov": {
+      "vw": 390,
+      "scrollWidth": 390,
+      "small": [],
+      "outside": [],
+      "title": "Выбор момента"
+    }
+  },
+  "errors": [],
+  "steps": [
+    "экран «Сегодня» → 01_segodnya.png: ок",
+    "экран «Выбор момента» → 02_vybor_fayla.png: ок",
+    "«Предложить моменты»: первый кандидат ставит начало на 0:20.0",
+    "экран «Выбор момента» → 03_vybor_momenta.png: ок",
+    "экран «Рамка вебкамеры» → 04_ramka_vebkamery.png: ок",
+    "рамка сохранена в профиль источника: [0.734, 0.639, 0.250, 0.333]",
+    "экран «Очередь» → 05_ochered.png: ок",
+    "экран «Очередь» → 05b_ochered_gotovo.png: ок",
+    "экран «Готовый клип» → 06_gotovyi_klip.png: ок",
+    "«Пересобрать»: версия 1, строки: Привет, это ИСПРАВЛЕННЫЙ текст | самый громкий момент! | Чат, вы это | видели? | Невероятно! | Ставьте лайк, | если тоже кричали",
+    "экран «Готовый клип» → 07_posle_peresborki.png: ок",
+    "«Опубликовано» → на «Сегодня» пост 2 из 3 того же источника",
+    "экран «Сегодня» → 08_segodnya_posle_publikacii.png: ок",
+    "повторное «Выбрать файл» с «Сегодня» показывает список файлов, а не старый выбор",
+    "экран «Клипы» → 09_klipy.png: ок",
+    "экран «Настройки» → 10_nastroyki.png: ок",
+    "экран «Новый источник» → 11_novyi_istochnik.png: ок",
+    "новый блогер сохранён → открылся экран «Рамка вебкамеры»",
+    "экран «Рамка вебкамеры» → 12_ramka_pustoy_istochnik.png: ок",
+    "AVI не проигрывается браузером → включился режим кадров, ползунок меняет кадр",
+    "экран «Выбор момента» → 13_rezhim_kadrov.png: ок"
+  ],
+  "ok": true
+}
