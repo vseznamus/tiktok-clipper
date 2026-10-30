@@ -125,25 +125,8 @@ final class VoskAsr {
         File zip = new File(new File(s.dir, "cache"), id + ".zip");
         deleteTree(tmpDir);
         JobQueue.Progress p = ctx.stage(0, 0.85, "Скачиваю модель «" + mi.name + "»");
-        HttpURLConnection c = (HttpURLConnection) new URL(mi.url).openConnection();
-        c.setConnectTimeout(15000);
-        c.setReadTimeout(30000);
-        if (c.getResponseCode() != 200) throw new ApiError(502, "Сайт моделей ответил " + c.getResponseCode() + ". Попробуйте позже.");
-        long total = c.getContentLengthLong() > 0 ? c.getContentLengthLong() : mi.sizeMb * 1024L * 1024L;
-        try (InputStream in = new BufferedInputStream(c.getInputStream()); OutputStream out = new FileOutputStream(zip)) {
-            byte[] buf = new byte[1 << 16];
-            long got = 0;
-            int n;
-            while ((n = in.read(buf)) > 0) {
-                ctx.check();
-                out.write(buf, 0, n);
-                got += n;
-                p.set(Math.min(1.0, got / (double) total));
-            }
-        } catch (IOException e) {
-            zip.delete();
-            throw new ApiError(502, "Не удалось скачать модель: нет интернета или связь оборвалась.");
-        }
+        zip.delete();
+        fetchWithResume(mi.url, zip, mi.sizeMb * 1024L * 1024L, p, ctx);
         ctx.progress(0.88, "Распаковываю модель");
         try (ZipInputStream zin = new ZipInputStream(new BufferedInputStream(new java.io.FileInputStream(zip)))) {
             ZipEntry e;
@@ -173,6 +156,51 @@ final class VoskAsr {
         JSONObject r = new JSONObject();
         r.put("model", id);
         return r;
+    }
+
+    /** Скачивание с повторами: при обрыве связи докачивает с того же места (до 6 попыток). */
+    static void fetchWithResume(String url, File dst, long expected, JobQueue.Progress p, JobQueue.Ctx ctx) throws Exception {
+        final int attempts = 6;
+        for (int attempt = 1; ; attempt++) {
+            ctx.check();
+            long have = dst.isFile() ? dst.length() : 0;
+            try {
+                HttpURLConnection c = (HttpURLConnection) new URL(url).openConnection();
+                c.setConnectTimeout(15000);
+                c.setReadTimeout(30000);
+                if (have > 0) c.setRequestProperty("Range", "bytes=" + have + "-");
+                int code = c.getResponseCode();
+                if (code == 416 && have > 0) return; // уже скачано целиком
+                if (code != 200 && code != 206) {
+                    throw new ApiError(502, "Сайт моделей ответил " + code + ". Попробуйте позже.");
+                }
+                boolean append = code == 206;
+                if (!append) have = 0;
+                long len = c.getContentLengthLong();
+                long total = len > 0 ? have + len : Math.max(expected, have + 1);
+                try (InputStream in = new BufferedInputStream(c.getInputStream());
+                     OutputStream out = new FileOutputStream(dst, append)) {
+                    byte[] buf = new byte[1 << 16];
+                    long got = have;
+                    int n;
+                    while ((n = in.read(buf)) > 0) {
+                        ctx.check();
+                        out.write(buf, 0, n);
+                        got += n;
+                        p.set(Math.min(1.0, got / (double) total));
+                    }
+                    if (len > 0 && got < total) throw new IOException("файл скачан не полностью");
+                }
+                return;
+            } catch (IOException e) {
+                if (attempt >= attempts) {
+                    dst.delete();
+                    throw new ApiError(502, "Не удалось скачать модель: связь обрывается. Подключитесь к Wi-Fi и нажмите «Скачать» ещё раз.");
+                }
+                ctx.progress(0, "Связь оборвалась — повторяю (попытка " + (attempt + 1) + " из " + attempts + ")");
+                Thread.sleep(2000L * attempt);
+            }
+        }
     }
 
     static void deleteTree(File f) {

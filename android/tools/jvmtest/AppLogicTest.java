@@ -71,6 +71,19 @@ public class AppLogicTest {
             check(Math.abs(out.length - 16000) < 3, "длина " + out.length);
             check(Math.abs(freqByZeroCross(out, 1, 16000) - 440) < 3, "частота");
         });
+        test("отбор кадров: первый кадр рисуется, 30/60 fps проходят, 120 fps прореживаются", () -> {
+            long start = 2281_000_000L, end = 2451_000_000L; // 38:01–40:51, как в отчёте с телефона
+            check(VideoRenderer.shouldRender(start, -1, start, end), "первый кадр отброшен");
+            check(!VideoRenderer.shouldRender(start - 40_000, -1, start, end), "кадр до начала");
+            check(!VideoRenderer.shouldRender(end, start, start, end), "кадр после конца");
+            int n30 = 0, n120 = 0;
+            long last = -1;
+            for (long t = start; t < end; t += 33_333) if (VideoRenderer.shouldRender(t, last, start, end)) { last = t; n30++; }
+            last = -1;
+            for (long t = start; t < start + 1_000_000; t += 8_333) if (VideoRenderer.shouldRender(t, last, start, end)) { last = t; n120++; }
+            check(Math.abs(n30 - 170 * 30) <= 2, "30 fps: " + n30);
+            check(n120 >= 55 && n120 <= 61, "120 fps → " + n120 + " кадров/с");
+        });
         test("сведение 5.1 → стерео и моно без перегруза", () -> {
             float[] six = {1, 1, 1, 1, 1, 1};
             float[] st = AudioPipe.downmix(six, 0, 1, 6, 2);

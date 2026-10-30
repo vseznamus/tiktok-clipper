@@ -20,8 +20,20 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
       - name: Интерфейс в assets
         run: bash android/tools/sync_web.sh
+      - name: Ключ подписи из секретов
+        env:
+          KS_B64: ${{ secrets.NAREZKA_KEYSTORE_B64 }}
+        run: |
+          if [ -n "$KS_B64" ]; then
+            echo "$KS_B64" | base64 -d > "$RUNNER_TEMP/narezka.keystore"
+            echo "NAREZKA_KEYSTORE=$RUNNER_TEMP/narezka.keystore" >> "$GITHUB_ENV"
+          else
+            echo "::warning::Секрет NAREZKA_KEYSTORE_B64 не задан — APK подписан временным ключом, поверх старой версии не встанет"
+          fi
       - name: Сборка
         working-directory: android
+        env:
+          NAREZKA_KEY_PASSWORD: ${{ secrets.NAREZKA_KEY_PASSWORD }}
         run: chmod +x gradlew && ./gradlew --no-daemon --stacktrace assembleRelease
       - name: Переименование
         run: cp android/app/build/outputs/apk/release/app-release.apk Narezka.apk

@@ -278,22 +278,22 @@ final class VideoRenderer {
             ex.seekTo(startUs, MediaExtractor.SEEK_TO_PREVIOUS_SYNC);
             MediaCodec.BufferInfo di = new MediaCodec.BufferInfo(), ei = new MediaCodec.BufferInfo();
             boolean inDone = false, decDone = false, encDone = false;
-            long lastRendered = Long.MIN_VALUE, minGap = 1000000L / 61, lastEncPts = -1;
+            long lastRendered = -1, lastEncPts = -1;
             long total = Math.max(1, endUs - startUs);
             while (!encDone) {
                 if (cancel.get()) throw new JobQueue.Cancelled();
-                if (!inDone) {
-                    int i = dec.dequeueInputBuffer(TIMEOUT_US);
-                    if (i >= 0) {
-                        int n = ex.readSampleData(dec.getInputBuffer(i), 0);
-                        long t = ex.getSampleTime();
-                        if (n < 0 || t > endUs + 1000000L) {
-                            dec.queueInputBuffer(i, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM);
-                            inDone = true;
-                        } else {
-                            dec.queueInputBuffer(i, 0, n, t, 0);
-                            ex.advance();
-                        }
+                // подаём декодеру всё, что он готов взять, без ожидания (быстрая перемотка от ключевого кадра)
+                while (!inDone) {
+                    int i = dec.dequeueInputBuffer(0);
+                    if (i < 0) break;
+                    int n = ex.readSampleData(dec.getInputBuffer(i), 0);
+                    long t = ex.getSampleTime();
+                    if (n < 0 || t > endUs + 1000000L) {
+                        dec.queueInputBuffer(i, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM);
+                        inDone = true;
+                    } else {
+                        dec.queueInputBuffer(i, 0, n, t, 0);
+                        ex.advance();
                     }
                 }
                 if (!decDone) {
@@ -301,7 +301,7 @@ final class VideoRenderer {
                     if (o >= 0) {
                         long pts = di.presentationTimeUs;
                         boolean eos = (di.flags & MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0;
-                        boolean render = di.size > 0 && pts >= startUs && pts < endUs && pts - lastRendered >= minGap;
+                        boolean render = di.size > 0 && shouldRender(pts, lastRendered, startUs, endUs);
                         dec.releaseOutputBuffer(o, render);
                         if (render) {
                             awaitFrame();
@@ -334,12 +334,12 @@ final class VideoRenderer {
                     }
                     if (o < 0) continue;
                     if ((ei.flags & MediaCodec.BUFFER_FLAG_CODEC_CONFIG) != 0) ei.size = 0;
-                    if (ei.size > 0 && muxStarted && ei.presentationTimeUs > lastEncPts) {
+                    if (ei.size > 0 && muxStarted) {
                         ByteBuffer b = enc.getOutputBuffer(o);
                         b.position(ei.offset);
                         b.limit(ei.offset + ei.size);
                         mux.writeSampleData(muxV, b, ei);
-                        lastEncPts = ei.presentationTimeUs;
+                        lastEncPts = Math.max(lastEncPts, ei.presentationTimeUs);
                         // звук пишем вперемешку с видео, по времени
                         while (muxA >= 0 && ai < audio.samples.size() && audio.samples.get(ai).ptsUs <= lastEncPts) {
                             writeAudio(mux, muxA, audio.samples.get(ai++));
@@ -380,6 +380,12 @@ final class VideoRenderer {
             if (frameThread != null) frameThread.quitSafely();
             if (encSurface != null) encSurface.release();
         }
+    }
+
+    /** Не чаще 60 кадров/с. lastRendered < 0 — кадров ещё не было (без вычитаний, чтобы не было переполнения). */
+    static boolean shouldRender(long pts, long lastRendered, long startUs, long endUs) {
+        if (pts < startUs || pts >= endUs) return false;
+        return lastRendered < 0 || pts - lastRendered >= 1000000L / 61;
     }
 
     private static void writeAudio(MediaMuxer mux, int track, AudioPipe.Sample s) {
