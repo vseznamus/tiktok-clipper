@@ -445,6 +445,11 @@ public final class Subs {
                     + "подписывайтесь на (канал|наш канал)|dimatorzok|amara\\.org|thanks for watching|subtitles by",
             Pattern.CASE_INSENSITIVE | Pattern.UNICODE_CASE);
 
+    /** Типичные «галлюцинации» распознавания на музыке и тишине (титры, «продолжение следует»). */
+    public static boolean isHallucination(String text) {
+        return HALL.matcher(text).find();
+    }
+
     public static List<Word> cleanWords(List<Word> words) {
         if (!words.isEmpty() && words.size() <= 12 && HALL.matcher(joined(words)).find()) return new ArrayList<>();
         List<Word> out = new ArrayList<>();

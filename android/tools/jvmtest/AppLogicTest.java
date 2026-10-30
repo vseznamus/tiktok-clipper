@@ -92,6 +92,68 @@ public class AppLogicTest {
             check(mono.length == 1 && Math.abs(mono[0]) < 1e-6, "моно");
         });
 
+        test("Whisper: разбор слов, сдвиг времени, кириллица, отсев «титров»", () -> {
+            String raw = "L\tru\n"
+                    + "S\t0\t0\t250\t0.010\n"
+                    + "W\t0\t0\t60\tПривет,\n"
+                    + "W\t0\t60\t130\tкак\n"
+                    + "W\t0\t130\t250\tдела?\n"
+                    + "S\t1\t300\t500\t0.700\n"
+                    + "W\t1\t300\t400\tСубтитры\n"
+                    + "W\t1\t400\t450\tсделал\n"
+                    + "W\t1\t450\t500\tDimaTorzok\n"
+                    + "S\t2\t600\t800\t0.020\n"
+                    + "W\t2\t700\t700\tНу\n"
+                    + "W\t2\t700\t700\tладно.\n"
+                    + "мусор\tстрока\n";
+            java.util.List<ru.tiktokclipper.core.Subs.Word> w = WhisperAsr.parse(raw, 10.0);
+            check(w.size() == 5, "слов " + w.size());
+            check(w.get(0).w.equals("Привет,") && Math.abs(w.get(0).s - 10.0) < 1e-6 && Math.abs(w.get(0).e - 10.6) < 1e-6, "первое слово");
+            check(w.get(2).w.equals("дела?") && Math.abs(w.get(2).e - 12.5) < 1e-6, "знаки препинания и конец");
+            // у последнего сегмента время токенов вырождено — слова делят сегмент 6.0–8.0 по длине
+            check(Math.abs(w.get(3).s - 16.0) < 1e-6 && Math.abs(w.get(4).e - 18.0) < 1e-6, "раздача времени " + w.get(3).s + " " + w.get(4).e);
+            check(w.get(3).e <= w.get(4).s + 1e-9, "порядок");
+        });
+        test("Whisper: время слов внутри сегмента, по порядку, без нулевой длины", () -> {
+            java.util.List<ru.tiktokclipper.core.Subs.Word> ws = new java.util.ArrayList<>();
+            ws.add(new ru.tiktokclipper.core.Subs.Word("а", 0.5, 1.5));
+            ws.add(new ru.tiktokclipper.core.Subs.Word("б", 1.0, 1.0));
+            ws.add(new ru.tiktokclipper.core.Subs.Word("в", 2.5, 9.0));
+            WhisperAsr.fixTimes(ws, 1.0, 3.0);
+            double prev = 1.0;
+            for (ru.tiktokclipper.core.Subs.Word x : ws) {
+                check(x.s >= prev - 1e-9 && x.e > x.s && x.e <= 3.0 + 1e-9, x.w + " " + x.s + "–" + x.e);
+                prev = x.e;
+            }
+        });
+        test("модели: выбор Whisper/Vosk, проверка файла ggml", () -> {
+            java.io.File dir = java.nio.file.Files.createTempDirectory("asr").toFile();
+            Store st = new Store(dir);
+            JSONObject se = new JSONObject();
+            check(AsrModels.pickModel(st, "auto", se) == null, "ничего не скачано");
+            java.io.File vosk = new java.io.File(VoskAsr.dir(st, "ru-small"), "conf");
+            vosk.mkdirs();
+            new java.io.FileOutputStream(new java.io.File(vosk, "model.conf")).close();
+            check("ru-small".equals(AsrModels.pickModel(st, "ru", se)), "только Vosk");
+            check(AsrModels.pickModel(st, "en", se).equals("ru-small"), "запасной вариант — любая скачанная");
+            java.io.File wf = WhisperAsr.file(st, AsrModels.info("whisper-base"));
+            wf.getParentFile().mkdirs();
+            try (java.io.RandomAccessFile r = new java.io.RandomAccessFile(wf, "rw")) {
+                r.write(new byte[]{'l', 'm', 'g', 'g'});
+                r.setLength(11L * 1024 * 1024);
+            }
+            check(WhisperAsr.isGgml(wf), "ggml");
+            check("whisper-base".equals(AsrModels.pickModel(st, "ru", se)), "Whisper важнее Vosk");
+            se.put("asr_model", "ru-small");
+            check("ru-small".equals(AsrModels.pickModel(st, "ru", se)), "выбор пользователя");
+            se.put("asr_model", "whisper-small");
+            check("whisper-base".equals(AsrModels.pickModel(st, "ru", se)), "выбранная не скачана → другая Whisper");
+            check(wf.getName().equals("ggml-base-q5_1.bin"), wf.getName());
+            java.io.File bad = new java.io.File(dir, "bad.bin");
+            try (java.io.FileOutputStream o = new java.io.FileOutputStream(bad)) { o.write("<html>".getBytes()); }
+            check(!WhisperAsr.isGgml(bad), "страница ошибки вместо модели");
+        });
+
         // эталон из Python: строки "layout sw sh |x y w h u0 v0 u1 v1|..." передаются аргументами
         for (String ref : args) {
             String[] parts = ref.split("\\|");

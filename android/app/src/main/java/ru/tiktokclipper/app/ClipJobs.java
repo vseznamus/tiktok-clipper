@@ -92,15 +92,22 @@ final class ClipJobs {
                 } else if ("off".equals(settings.optString("asr_backend"))) {
                     ctx.warn("Распознавание речи выключено в настройках. Клип сделан без субтитров.");
                 } else {
-                    String model = VoskAsr.pickModel(st, language, settings);
-                    if (model == null) {
+                    String model = AsrModels.pickModel(st, language, settings);
+                    AsrModels.ModelInfo mi = model == null ? null : AsrModels.info(model);
+                    if (mi == null) {
                         ctx.warn("Модель распознавания речи не скачана: «Настройки» → «Распознавание речи» → «Скачать». "
                                 + "Клип сделан без субтитров.");
                     } else {
-                        JobQueue.Progress pr = ctx.stage(0.03, 0.40, "Распознаю речь (Vosk, " + model + ")");
-                        words = VoskAsr.transcribe(e.ctx, st, uri, (long) (start * 1e6), (long) (end * 1e6), model, ctx.cancel, pr);
+                        long us0 = (long) (start * 1e6), us1 = (long) (end * 1e6);
+                        if (AsrModels.WHISPER.equals(mi.engine)) {
+                            JobQueue.Progress pr = ctx.stage(0.03, 0.55, "Распознаю речь (Whisper " + model.replace("whisper-", "") + ")");
+                            words = WhisperAsr.transcribe(e.ctx, st, uri, us0, us1, model, language, ctx.cancel, pr);
+                        } else {
+                            JobQueue.Progress pr = ctx.stage(0.03, 0.40, "Распознаю речь (Vosk, " + model + ")");
+                            words = VoskAsr.transcribe(e.ctx, st, uri, us0, us1, model, ctx.cancel, pr);
+                        }
                         ctx.check();
-                        asrInfo = new JSONObject().put("backend", "vosk").put("model", model);
+                        asrInfo = new JSONObject().put("backend", mi.engine).put("model", model);
                         if (words.isEmpty()) ctx.warn("Речь не найдена — клип сделан без субтитров.");
                     }
                 }
@@ -180,7 +187,7 @@ final class ClipJobs {
         } else if (!muxed.renameTo(fin)) {
             throw new java.io.IOException("Не удалось сохранить клип");
         }
-        VoskAsr.deleteTree(work);
+        AsrModels.deleteTree(work);
 
         double expected = meta.getDouble("end") - meta.getDouble("start");
         MediaMetadataRetriever mr = new MediaMetadataRetriever();
@@ -291,7 +298,12 @@ final class ClipJobs {
     }
 
     JSONObject downloadModel(JobQueue.Ctx ctx) throws Exception {
-        return VoskAsr.download(e.store, ctx.params.optString("model"), ctx);
+        String id = ctx.params.optString("model");
+        if ("delete".equals(ctx.params.optString("action"))) {
+            AsrModels.delete(e.store, id);
+            return new JSONObject().put("model", id).put("deleted", true);
+        }
+        return AsrModels.download(e.store, id, ctx);
     }
 
     static String sha1(String s) throws Exception {

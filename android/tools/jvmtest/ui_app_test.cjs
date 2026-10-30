@@ -120,18 +120,26 @@ async function check(page, name, full = false) {
     await ta.fill("ИСПРАВЛЕНО в приложении");
     await ta.dispatchEvent("change");
     await page.click("#bRebuild");
-    await page.waitForSelector("#toast:not([hidden])", { timeout: 60000 });
-    if (!(await page.innerText("#toast")).includes("пересобран")) fail("пересборка");
+    // ждём именно сообщение о пересборке (предыдущий toast может быть ещё на экране)
+    await page.waitForFunction(() => { const t = document.querySelector("#toast"); return t && !t.hidden && t.innerText.includes("пересобран"); },
+      null, { timeout: 60000 }).catch(() => fail("пересборка"));
     step("«Пересобрать»: правка субтитров принята Java-API");
 
     // настройки: скачивание модели распознавания
     await page.click('#nav a[data-tab="settings"]');
     await page.waitForSelector("[data-model]");
     await check(page, "a09_nastroyki", true);
-    await page.click('[data-model="ru-small"]');
+    if (!(await page.innerText("#app")).includes("рекомендуем")) fail("нет пометки рекомендуемой модели");
+    await page.click('[data-model="whisper-small"]');
     await page.waitForSelector("#toast:not([hidden])", { timeout: 30000 });
-    await page.waitForFunction(() => !document.querySelector('[data-model="ru-small"]'));
-    step("«Скачать» модель → задача в очереди с прогрессом → модель отмечена «скачана»");
+    await page.waitForSelector('[data-mdel="whisper-small"]');
+    await check(page, "a09b_model_skachana", true);
+    step("«Скачать» Whisper small → задача в очереди с прогрессом → модель отмечена «скачана», есть «Удалить»");
+    await page.click('[data-mdel="whisper-small"]');
+    await page.waitForSelector('[data-model="whisper-small"]', { timeout: 30000 });
+    step("«Удалить» модель → снова «Скачать»");
+    await page.click('[data-model="whisper-small"]');
+    await page.waitForSelector('[data-mdel="whisper-small"]', { timeout: 30000 });
 
     // отдельное видео через системное окно
     await page.goto(BASE + "/#/clip");

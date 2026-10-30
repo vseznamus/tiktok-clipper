@@ -408,9 +408,13 @@ public class AndroidPlatform implements Platform {
             o.put("ffmpeg", ff);
             JSONArray models = new JSONArray(), ids = new JSONArray();
             JSONArray installed = new JSONArray();
-            for (VoskAsr.ModelInfo m : VoskAsr.MODELS) {
-                boolean inst = VoskAsr.isInstalled(store, m.id);
-                models.put(new JSONObject().put("id", m.id).put("name", m.name).put("size_mb", m.sizeMb).put("installed", inst));
+            boolean whisperOk = WhisperAsr.available(ctx);
+            for (AsrModels.ModelInfo m : AsrModels.ALL) {
+                boolean inst = AsrModels.isInstalled(store, m.id);
+                boolean ok = !AsrModels.WHISPER.equals(m.engine) || whisperOk;
+                models.put(new JSONObject().put("id", m.id).put("name", m.name).put("note", m.note).put("engine", m.engine)
+                        .put("size_mb", m.sizeMb).put("installed", inst).put("supported", ok)
+                        .put("recommended", m.id.equals(AsrModels.DEFAULT)));
                 ids.put(m.id);
                 if (inst) installed.put(m.id);
             }
@@ -419,11 +423,12 @@ public class AndroidPlatform implements Platform {
             JSONObject asr = new JSONObject();
             asr.put("vosk", new JSONObject().put("ok", installed.length() > 0).put("models", installed)
                     .put("message", installed.length() > 0 ? "" : "модель не скачана — скачайте ниже"));
+            asr.put("whisper", new JSONObject().put("ok", whisperOk).put("message", whisperOk ? "" : WhisperAsr.unavailableReason()));
             o.put("asr", asr);
             o.put("opencv", true); // автопоиск лица: android.media.FaceDetector
             o.put("media_root", "папки, выбранные для источников");
             o.put("output_dir", "Галерея: Movies/TikTokClips");
-            o.put("default_model", "ru-small");
+            o.put("default_model", whisperOk ? AsrModels.DEFAULT : "ru-small");
             o.put("default_preset", JSONObject.NULL);
         } catch (JSONException e) {
             throw new RuntimeException(e);

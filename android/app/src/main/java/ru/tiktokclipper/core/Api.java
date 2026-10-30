@@ -20,7 +20,7 @@ import java.util.Locale;
  * другие приложения на телефоне не смогут управлять нарезкой.
  */
 public class Api implements MiniHttp.Handler {
-    public static final String VERSION = "1.0.0-android";
+    public static final String VERSION = "1.1.0-android";
     public static final String COOKIE = "clipper_k";
 
     private final Store store;
@@ -466,7 +466,8 @@ public class Api implements MiniHttp.Handler {
                 break;
             }
             case "model":
-                title = "Скачивание модели распознавания: " + p.optString("model");
+                title = ("delete".equals(p.optString("action")) ? "Удаление модели распознавания: " : "Скачивание модели распознавания: ")
+                        + p.optString("model");
                 break;
             default:
                 throw new ApiError(400, "Неизвестный тип задачи");

@@ -2,6 +2,9 @@ plugins {
     id 'com.android.application'
 }
 
+// Варианты вычислительного ядра ggml (MODULE-библиотеки) копируются сюда при сборке нативной части.
+def ggmlModules = "${layout.buildDirectory.get().asFile}/ggml-modules"
+
 android {
     namespace 'ru.tiktokclipper'
     compileSdk 34
@@ -10,11 +13,30 @@ android {
         applicationId 'ru.tiktokclipper'
         minSdk 26          // Android 8.0
         targetSdk 34
-        versionCode 3
-        versionName '1.0.2'
+        versionCode 4
+        versionName '1.1.0'
         ndk {
-            // телефоны: 64 и 32 бита ARM (распознавание речи Vosk — нативная библиотека)
+            // телефоны: 64 и 32 бита ARM (Vosk — на обоих, Whisper — только на 64-битных)
             abiFilters 'arm64-v8a', 'armeabi-v7a'
+        }
+        externalNativeBuild {
+            cmake {
+                arguments '-DANDROID_STL=c++_shared', "-DNAREZKA_MODULES_DIR=${ggmlModules}"
+            }
+        }
+    }
+
+    // Распознавание речи Whisper (whisper.cpp) — нативная часть, см. src/main/cpp/CMakeLists.txt
+    ndkVersion '27.2.12479018'
+    externalNativeBuild {
+        cmake {
+            path 'src/main/cpp/CMakeLists.txt'
+            version '3.22.1'
+        }
+    }
+    sourceSets {
+        main {
+            jniLibs.srcDirs += ggmlModules
         }
     }
 
@@ -48,7 +70,9 @@ android {
 
     packaging {
         jniLibs {
+            // библиотеки распаковываются в папку приложения: ggml загружает оттуда вариант ядра под процессор
             useLegacyPackaging true
+            pickFirsts += ['**/libggml-cpu-*.so']
         }
     }
 

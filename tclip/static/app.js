@@ -724,6 +724,14 @@ async function viewSettings() {
     if (parseHash().name !== "settings") return;
     if (fin.status === "done") { toast("Модель скачана"); viewSettings(); } else { b.disabled = false; box.innerHTML = `<p class="err">${esc(fin.error || "Не получилось")}</p>`; }
   }));
+  $$("[data-mdel]").forEach((b) => (b.onclick = async () => {
+    if (!confirm("Удалить модель? Её можно будет скачать снова.")) return;
+    b.disabled = true;
+    const job = await api("/api/jobs", { method: "POST", body: { type: "model", params: { model: b.dataset.mdel, action: "delete" } } });
+    const fin = await pollJob(job.id, () => {});
+    if (parseHash().name !== "settings") return;
+    if (fin.status === "done") { toast("Модель удалена"); viewSettings(); } else { b.disabled = false; toast(fin.error || "Не получилось"); }
+  }));
   $("#bAsr").onclick = async () => {
     const body = { asr_backend: $("#aB").value, asr_model: $("#aM").value, asr_language: $("#aL").value, moment_len: +$("#mL").value };
     if ($("#vP")) body.x264_preset = $("#vP").value;
@@ -736,17 +744,21 @@ async function viewSettings() {
 
 function appAsrCard(st, se) {
   const models = st.asr_models || [];
-  const langs = [["auto", "Определять по модели"], ["ru", "Русский"], ["en", "English"]];
+  const langs = [["auto", "Определять автоматически"], ["ru", "Русский"], ["en", "English"], ["uk", "Українська"]];
+  const usable = models.filter((m) => m.supported !== false);
   return `<div class="card"><h2>Распознавание речи</h2>
-    <p class="muted small">Работает без интернета. Модель скачивается один раз.</p>
-    <ul class="list">${models.map((m) => `<li><div class="item"><span class="t">${esc(m.name)}<br>
-      <span class="small ${m.installed ? "ok" : "muted"}">${m.installed ? "скачана" : "не скачана"}</span></span>
-      ${m.installed ? "" : `<button class="btn sm" style="width:auto" data-model="${esc(m.id)}">Скачать</button>`}</div></li>`).join("")}</ul>
+    <p class="muted small">Работает без интернета. Модель скачивается один раз (лучше по Wi-Fi).</p>
+    <ul class="list">${models.map((m) => `<li><div class="item"><span class="t">${esc(m.name)}${m.recommended ? ' <span class="ok small">★ рекомендуем</span>' : ""}<br>
+      <span class="muted small">${esc(m.note || "")}</span><br>
+      <span class="small ${m.installed ? "ok" : "muted"}">${m.supported === false ? "не работает на этом телефоне" : m.installed ? "скачана" : "не скачана"}</span></span>
+      ${m.supported === false ? "" : m.installed ? `<button class="btn sm ghost" style="width:auto" data-mdel="${esc(m.id)}">Удалить</button>`
+        : `<button class="btn sm" style="width:auto" data-model="${esc(m.id)}">Скачать</button>`}</div></li>`).join("")}</ul>
     <div id="mProg"></div>
     <label class="f" for="aB">Распознавание</label><select id="aB">
       ${[["auto", "Включено"], ["off", "Выключено"]].map(([v, n]) => `<option value="${v}" ${(se.asr_backend === "off" ? "off" : "auto") === v ? "selected" : ""}>${n}</option>`).join("")}</select>
     <label class="f" for="aM">Модель по умолчанию</label><select id="aM">
-      ${models.map((m) => `<option value="${esc(m.id)}" ${(se.asr_model || st.default_model) === m.id ? "selected" : ""}>${esc(m.name)}</option>`).join("")}</select>
+      ${usable.map((m) => `<option value="${esc(m.id)}" ${(se.asr_model || st.default_model) === m.id ? "selected" : ""}>${esc(m.name)}${m.installed ? "" : " (не скачана)"}</option>`).join("")}</select>
+    <p class="muted small">Если выбранная модель не скачана, возьму любую скачанную: сначала Whisper, потом Vosk.</p>
     <label class="f" for="aL">Язык по умолчанию</label><select id="aL">
       ${langs.map(([v, n]) => `<option value="${v}" ${se.asr_language === v ? "selected" : ""}>${n}</option>`).join("")}</select>
     <label class="f" for="vB">Качество видео</label><select id="vB">

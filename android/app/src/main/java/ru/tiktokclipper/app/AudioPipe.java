@@ -389,4 +389,20 @@ final class AudioPipe {
             out.accept(s, s.length);
         }, cancel, prog);
     }
+
+    interface FloatSink {
+        void accept(float[] data, int n) throws Exception;
+    }
+
+    /** То же для Whisper: 16 кГц моно, числа от −1 до 1. */
+    static boolean pcm16kMonoFloat(Context ctx, Uri uri, long startUs, long endUs, final FloatSink out,
+                                   AtomicBoolean cancel, JobQueue.Progress prog) throws Exception {
+        final Resampler[] rs = {null};
+        return decode(ctx, uri, startUs, endUs, 1, (data, frames, ch, rate, ptsUs) -> {
+            if (rs[0] == null) rs[0] = new Resampler(rate, 16000, 1);
+            float[] r = rs[0].process(data, frames);
+            for (int i = 0; i < r.length; i++) r[i] = Math.max(-1f, Math.min(1f, r[i]));
+            out.accept(r, r.length);
+        }, cancel, prog);
+    }
 }

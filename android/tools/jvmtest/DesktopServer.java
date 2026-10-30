@@ -130,19 +130,34 @@ public class DesktopServer {
             }
         }
 
-        boolean modelInstalled() { return new File(store.dir, "models/vosk/ru-small/conf/model.conf").isFile(); }
+        static final String[][] MODELS = {
+                {"whisper-small", "whisper", "Whisper small — точная (190 МБ)", "Хорошо понимает русский, ставит знаки препинания."},
+                {"whisper-base", "whisper", "Whisper base — быстрее (60 МБ)", "В 2–3 раза быстрее small, ошибается чаще."},
+                {"ru-small", "vosk", "Vosk, русский — очень быстрая (45 МБ)", "Быстро, но ошибается чаще и пишет без знаков препинания."}};
+
+        File modelMark(String id) { return new File(store.dir, "models/mock/" + id); }
+
+        boolean modelInstalled() {
+            for (String[] m : MODELS) if (modelMark(m[0]).isFile()) return true;
+            return false;
+        }
 
         public JSONObject status() {
             try {
                 JSONObject o = new JSONObject().put("version", Api.VERSION).put("platform", "android-app").put("auth", false)
-                        .put("termux", false).put("opencv", false).put("default_model", "ru-small")
+                        .put("termux", false).put("opencv", false).put("default_model", "whisper-small")
                         .put("media_root", "папки, выбранные для источников").put("output_dir", "Галерея: Movies/TikTokClips");
                 o.put("checks", new JSONArray().put(new JSONObject().put("name", "Кодировщик видео H.264").put("ok", true))
                         .put(new JSONObject().put("name", "Кодировщик звука AAC").put("ok", true)));
                 o.put("ffmpeg", new JSONObject().put("ffmpeg", true).put("libass", true).put("libx264", true).put("problems", new JSONArray()));
-                o.put("asr_models", new JSONArray().put(new JSONObject().put("id", "ru-small").put("name", "Русский (маленькая, 45 МБ)").put("installed", modelInstalled()))
-                        .put(new JSONObject().put("id", "en-small").put("name", "English (small, 40 MB)").put("installed", false)));
-                o.put("model_ids", new JSONArray().put("ru-small").put("en-small"));
+                JSONArray ms = new JSONArray(), ids = new JSONArray();
+                for (String[] m : MODELS) {
+                    ms.put(new JSONObject().put("id", m[0]).put("engine", m[1]).put("name", m[2]).put("note", m[3])
+                            .put("installed", modelMark(m[0]).isFile()).put("supported", true).put("recommended", m[0].equals("whisper-small")));
+                    ids.put(m[0]);
+                }
+                o.put("asr_models", ms);
+                o.put("model_ids", ids);
                 o.put("asr", new JSONObject().put("vosk", new JSONObject().put("ok", modelInstalled()).put("models", new JSONArray()).put("message", "")));
                 return o;
             } catch (Exception e) {
@@ -225,13 +240,17 @@ public class DesktopServer {
         }
 
         JSONObject model(JobQueue.Ctx ctx) throws Exception {
+            File mark = modelMark(ctx.params.getString("model"));
+            if ("delete".equals(ctx.params.optString("action"))) {
+                mark.delete();
+                return new JSONObject().put("model", ctx.params.getString("model")).put("deleted", true);
+            }
             for (int i = 1; i <= 10; i++) {
-                ctx.progress(i / 10.0, "Скачиваю модель «Русский (маленькая, 45 МБ)»");
+                ctx.progress(i / 10.0, "Скачиваю модель «Whisper small — точная (190 МБ)»");
                 Thread.sleep(150);
             }
-            File conf = new File(store.dir, "models/vosk/" + ctx.params.getString("model") + "/conf/model.conf");
-            conf.getParentFile().mkdirs();
-            Files.write(conf.toPath(), new byte[0]);
+            mark.getParentFile().mkdirs();
+            Files.write(mark.toPath(), new byte[0]);
             return new JSONObject().put("model", ctx.params.getString("model"));
         }
     }

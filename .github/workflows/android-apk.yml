@@ -35,8 +35,15 @@ jobs:
         env:
           NAREZKA_KEY_PASSWORD: ${{ secrets.NAREZKA_KEY_PASSWORD }}
         run: chmod +x gradlew && ./gradlew --no-daemon --stacktrace assembleRelease
-      - name: Переименование
-        run: cp android/app/build/outputs/apk/release/app-release.apk Narezka.apk
+      - name: Переименование и проверка нативных библиотек
+        run: |
+          cp android/app/build/outputs/apk/release/app-release.apk Narezka.apk
+          unzip -l Narezka.apk | grep '\.so$'
+          for lib in arm64-v8a/libnarezka_whisper.so arm64-v8a/libwhisper.so arm64-v8a/libggml-base.so \
+                     arm64-v8a/libggml-cpu-android_armv8.0_1.so arm64-v8a/libggml-cpu-android_armv8.2_1.so \
+                     arm64-v8a/libc++_shared.so arm64-v8a/libvosk.so armeabi-v7a/libvosk.so; do
+            unzip -l Narezka.apk | grep -q "lib/$lib" || { echo "::error::В APK нет lib/$lib"; exit 1; }
+          done
       - uses: actions/upload-artifact@v4
         with:
           name: tiktok-clipper-apk
