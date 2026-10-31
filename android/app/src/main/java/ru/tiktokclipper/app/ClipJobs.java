@@ -19,6 +19,7 @@ import java.util.UUID;
 
 import ru.tiktokclipper.core.Api;
 import ru.tiktokclipper.core.ApiError;
+import ru.tiktokclipper.core.ChatMoments;
 import ru.tiktokclipper.core.JobQueue;
 import ru.tiktokclipper.core.Moments;
 import ru.tiktokclipper.core.Mp4FastStart;
@@ -275,8 +276,24 @@ final class ClipJobs {
         String file = p.getString("file");
         Uri uri = e.platform.resolve(file);
         JSONObject info = e.platform.probeUri(uri);
-        if (!info.optBoolean("has_audio")) throw new ApiError(400, "В файле нет звука — искать громкие моменты не по чему");
         int length = p.optInt("length", e.store.settings().optInt("moment_len", 30));
+        // рядом лежит чат записи — моменты по реакции зрителей
+        Uri chatUri = e.platform.sidecarChat(file);
+        if (chatUri != null) {
+            ctx.progress(0.1, "Читаю чат записи");
+            ChatMoments.Chat chat;
+            try (java.io.InputStream in = e.ctx.getContentResolver().openInputStream(chatUri)) {
+                chat = ChatMoments.read(in);
+            }
+            ctx.check();
+            if (chat.n > 0) {
+                ctx.progress(0.8, "Ищу всплески в чате (" + chat.n + " сообщений)");
+                return new JSONObject().put("file", file).put("length", length).put("source", "chat").put("chat_messages", chat.n)
+                        .put("candidates", ChatMoments.find(chat, info.optDouble("duration"), length, 8)).put("speech", true);
+            }
+            ctx.warn("Файл чата рядом с видео не удалось прочитать (формат не распознан) — ищу по звуку.");
+        }
+        if (!info.optBoolean("has_audio")) throw new ApiError(400, "В файле нет звука — искать громкие моменты не по чему");
         long size = e.platform.uriSource(uri).size();
         File cache = new File(e.store.dir, "cache/" + sha1(file + "|" + size) + ".loud.json");
         double[] levels;

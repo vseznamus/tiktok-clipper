@@ -173,6 +173,7 @@ async function viewClip(_arg, q) {
   const dr = S.draft;
   if (q.get("source") !== null) { dr.source_id = q.get("source"); if (!q.get("file")) dr.file = null; }
   if (q.get("file")) dr.file = q.get("file");
+  if (q.get("auto") === "mom") { S.autoMom = true; dr.start = 0; dr.end = null; S.moments = {}; history.replaceState(null, "", "#/clip"); }
   if (q.get("start") !== null) {
     dr.start = Number(q.get("start")) || 0; dr.end = Number(q.get("end")) || null; S.moments = {};
     history.replaceState(null, "", "#/clip");
@@ -283,7 +284,8 @@ async function viewClip(_arg, q) {
       <p class="big" id="durTxt"></p>
       <button class="btn" id="playSeg">▶ Проиграть отрезок</button>
     </div>
-    <div class="card stack"><button class="btn" id="bMom">Предложить моменты</button><div id="momRes"></div></div>
+    <div class="card stack"><button class="btn" id="bMom">Предложить моменты</button>
+      ${info.has_chat ? `<p class="ok small">Рядом с видео есть файл чата — моменты найду по реакции зрителей.</p>` : ""}<div id="momRes"></div></div>
     <div class="card">
       <h2>Настройки клипа</h2>
       <label class="toggle"><span>Зеркало (отразить картинку)</span><input type="checkbox" id="oMirror" ${dr.mirror ? "checked" : ""}></label>
@@ -346,7 +348,9 @@ async function viewClip(_arg, q) {
     const renderCands = (res) => {
       const el = $("#momRes");
       if (!res.candidates.length) { el.innerHTML = `<p class="muted">Ничего не нашлось.</p>`; return; }
-      el.innerHTML = `<p class="muted small">Нажмите на момент — ползунки встанут на него.${res.speech ? "" : " (Учитывалась только громкость: рядом с видео нет .srt.)"}</p>` +
+      const how = res.source === "chat" ? ` По активности чата (${res.chat_messages} сообщений): где зрители писали в разы чаще обычного. Начало — за 15 с до всплеска.`
+        : res.speech ? "" : " (Учитывалась только громкость: рядом с видео нет .srt.)";
+      el.innerHTML = `<p class="muted small">Нажмите на момент — ползунки встанут на него.${how}</p>` +
         res.candidates.map((c, i) => `<button class="cand" data-i="${i}"><b>${i + 1}</b><span class="grow">${fmt(c.start, false)}–${fmt(c.end, false)}<br>
           <span class="muted small">${esc(c.reasons.join(", "))}</span></span><span class="bar"><i style="width:${Math.round(c.score * 100)}%"></i></span></button>`).join("");
       $$(".cand", el).forEach((b) => (b.onclick = () => {
@@ -364,6 +368,7 @@ async function viewClip(_arg, q) {
       if (fin.status !== "done") { $("#momRes").innerHTML = `<p class="err">${esc(fin.error || "Не получилось")}</p>`; return; }
       S.moments[dr.file] = fin.result; renderCands(fin.result);
     };
+    if (S.autoMom) { S.autoMom = false; $("#bMom").click(); }
 
     // опции
     const subVis = () => ($("#subOpts").hidden = !dr.subtitles);
@@ -789,24 +794,34 @@ async function viewDiscover(sec, q) {
   await loadCfg();
   app.innerHTML = `<h1>Моменты</h1>
   <div class="seg seg3" id="dSeg">${DISC.map(([k, n]) => `<button data-s="${k}" class="${k === sec ? "on" : ""}">${n}</button>`).join("")}</div>
-  <p class="muted small" style="margin:10px 2px">${sec === "twitch" ? "Моменты, из которых зрители нарезали больше всего клипов."
+  <p class="muted small" style="margin:10px 2px">${sec === "twitch" ? "Где зрители реагировали сильнее всего: всплески в чате записи и клипы зрителей."
     : "Минуты, которые зрители чаще всего упоминают в комментариях (например, «12:34 ахах»)."}</p>
   <div id="dBox"><p class="muted pad">Загружаю…</p></div>
   <button class="btn ghost sm" id="dRef">Обновить</button>`;
   $$("#dSeg button").forEach((b) => (b.onclick = () => go("#/discover/" + b.dataset.s)));
   $("#dRef").onclick = () => render(true);
+  let chatsCache = null;
   render(q && q.get("refresh") === "1");
 
   async function render(refresh) {
     const box = $("#dBox");
     box.innerHTML = `<p class="muted pad">Загружаю…</p>`;
-    let d;
+    let d, chats = null;
     try {
+      if (sec === "twitch") chats = chatsCache = await api("/api/discover/chats").catch(() => ({ items: [] }));
       d = sec === "twitch" ? await api("/api/discover/twitch" + (refresh ? "?refresh=1" : ""))
         : await api(`/api/discover/youtube?kind=${sec}` + (refresh ? "&refresh=1" : ""));
     } catch (e) { box.innerHTML = `<p class="err pad">${esc(e.message)}</p>`; return; }
     if (parseHash().name !== "discover" || S.discSec !== sec) return;
     const yt = sec !== "twitch";
+    const chatHtml = chats ? chatCard(chats.items) : "";
+    const watchHtml = watchCard(yt);
+    if (!yt && !d.configured) {
+      box.innerHTML = chatHtml + `<div class="card stack"><h2>Клипы зрителей Twitch</h2>
+        <p class="muted small">Дополнительно, если получится завести ключи Twitch: моменты, из которых зрители нарезали больше всего клипов.
+        Ключи — в «Настройках» (инструкция, раздел «Моменты»). Без ключей работает поиск по чату выше.</p></div>`;
+      bindChats(); return;
+    }
     if (!d.configured) {
       box.innerHTML = `<div class="card stack"><h2>Нужен ключ ${yt ? "YouTube" : "Twitch"}</h2>
         <p>${yt ? "Ключ YouTube Data API бесплатный: Google Cloud → создать проект → включить «YouTube Data API v3» → «Учётные данные» → «Создать ключ API»."
@@ -816,18 +831,53 @@ async function viewDiscover(sec, q) {
       return;
     }
     if (!d.has_sources) {
-      box.innerHTML = `<div class="card stack"><h2>Нет источников с ${yt ? "каналом YouTube" : "логином Twitch"}</h2>
-        <p>Откройте источник (стрим или блогер) и заполните поле «${yt ? "YouTube: ID канала" : "Twitch: логин"}».</p>
-        <a class="btn" href="#/settings">Открыть «Настройки»</a></div>`;
-      return;
+      box.innerHTML = chatHtml + `<div class="card stack"><h2>Нет ${yt ? "каналов YouTube" : "стримеров Twitch"}</h2>
+        <p>Откройте источник (стрим или блогер) и заполните поле «${yt ? "YouTube: ID канала" : "Twitch: логин"}» — или впишите их в список ниже.</p>
+        <a class="btn" href="#/settings">Открыть «Настройки»</a></div>` + watchHtml;
+      bindChats(); bindWatch(yt); return;
     }
     const groups = yt ? d.channels : d.streamers;
-    box.innerHTML = groups.map((g, gi) => `<div class="card"><h2>${esc(g.name || g.title)}</h2>
+    box.innerHTML = chatHtml + groups.map((g, gi) => `<div class="card"><h2>${esc(g.name || g.title)}${g.watch ? ' <span class="muted small">· из списка</span>' : ""}</h2>
       ${g.ok === false ? `<p class="err">${esc(g.error)}</p>` : ""}
       ${(yt ? g.videos : g.vods || []).map((v, vi) => itemHtml(g, v, gi, vi)).join("")
         || (g.ok === false ? "" : `<p class="muted">${yt ? (sec === "streams" ? "Прошедших трансляций не найдено." : "Видео не найдено.") : "Записей эфиров нет (или стример их не сохраняет)."}</p>`)}
-    </div>`).join("");
-    bind(groups, yt);
+    </div>`).join("") + watchHtml;
+    bind(groups, yt); bindChats(); bindWatch(yt);
+  }
+
+  function chatCard(items) {
+    return `<div class="card stack"><h2>Моменты по чату записи</h2>
+      <p class="muted small">Без ключей и интернета. Положите рядом с записью эфира файл чата с тем же именем
+        (например, <b>эфир.mp4</b> и <b>эфир.json</b> или <b>эфир.chat.txt</b>) — приложение найдёт минуты, где чат «взрывается».</p>
+      ${items.length ? `<ul class="list">${items.map((f, i) => `<li><button class="item" data-chat="${i}"><span class="t"><b class="wrap">${esc(f.name)}</b><br>
+        <span class="muted small">${esc(f.title)} · есть чат</span></span><span class="chev">›</span></button></li>`).join("")}</ul>`
+        : `<p class="warn small">Пока ни у одной записи в папках источников нет файла чата.</p>`}</div>`;
+  }
+  function bindChats() {
+    const items = (chatsCache || {}).items || [];
+    $$("[data-chat]").forEach((b) => (b.onclick = () => {
+      const f = items[+b.dataset.chat];
+      Object.assign(S.draft, { source_id: f.source_id, file: f.path }); saveDraft();
+      go(`#/clip?source=${encodeURIComponent(f.source_id)}&file=${encodeURIComponent(f.path)}&auto=mom`);
+    }));
+  }
+  function watchCard(yt) {
+    const k = yt ? "watch_youtube" : "watch_twitch";
+    return `<div class="card"><h2>Слежу без источника</h2>
+      <p class="muted small">${yt ? "ID каналов YouTube (начинаются с UC)" : "Логины Twitch"} через запятую — для тех, у кого нет своей папки и рамки.
+        Файл для нарезки выбирается кнопкой «Выбрать видео на телефоне».</p>
+      <input id="wList" autocapitalize="off" spellcheck="false" value="${esc(S.cfg.settings[k] || "")}" placeholder="${yt ? "UCxxxx, UCyyyy" : "streamer1, streamer2"}">
+      <div style="height:10px"></div><button class="btn" id="wSave">Сохранить список</button></div>`;
+  }
+  function bindWatch(yt) {
+    const b = $("#wSave"); if (!b) return;
+    b.onclick = async () => {
+      const val = $("#wList").value;
+      const bad = yt && val.split(/[,;\s]+/).filter(Boolean).find((x) => !/^UC[\w-]{10,40}$/.test(x));
+      if (bad) { toast("ID канала YouTube начинается с UC: " + bad, true); return; }
+      try { await api("/api/settings", { method: "PUT", body: { [yt ? "watch_youtube" : "watch_twitch"]: val } }); } catch (e) { return; }
+      await loadCfg(true); toast("Список сохранён"); render(true);
+    };
   }
 
   function itemHtml(g, v, gi, vi) {

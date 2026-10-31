@@ -142,9 +142,24 @@ async function check(page, name, full = false) {
     await page.waitForSelector('[data-mdel="whisper-small"]', { timeout: 30000 });
 
     // «Моменты»: без ключей — подсказка; ключи в «Настройках»; Twitch-клипы зрителей → «Резать»
+    // чат записи рядом с видео (формат TwitchDownloader): обычный темп + всплеск «KEKW» на 25-й секунде
+    const comments = [];
+    for (let t = 0; t < 40; t += 3) comments.push({ content_offset_seconds: t, commenter: { display_name: "z" }, message: { body: "привет" } });
+    for (let i = 0; i < 25; i++) comments.push({ content_offset_seconds: 25 + i * 0.1, commenter: { display_name: "z" + i }, message: { body: "KEKW ахаха" } });
+    fs.writeFileSync(path.join(demo, "media/streamer/stream_2026-10-28.json"), JSON.stringify({ video: { title: "Эфир" }, comments }));
     await page.click('#nav a[data-tab="discover"]');
-    await page.waitForSelector("text=Нужен ключ Twitch");
-    await check(page, "a11_momenty_bez_klyucha");
+    await page.waitForSelector("text=Моменты по чату записи");
+    await page.waitForSelector("[data-chat]");
+    await check(page, "a11_momenty_chat", true);
+    await page.click("[data-chat]");
+    await page.waitForSelector(".cand", { timeout: 60000 });
+    const mr = await page.innerText("#momRes");
+    if (!mr.includes("По активности чата") || !mr.includes("KEKW")) fail("моменты по чату: " + mr.slice(0, 300));
+    await page.click(".cand >> nth=0");
+    const cs = await page.inputValue("#tStart");
+    if (cs !== "0:10.0") fail("момент по чату не с той секунды: " + cs);
+    await check(page, "a11b_moment_po_chatu", true);
+    step(`без ключей: «Моменты по чату записи» → запись с чатом → всплеск «KEKW» найден, начало ${cs}`);
     await page.goto(BASE + "/#/settings");
     await page.waitForSelector("#bKeys");
     await page.fill("#kTwId", "abc123clientid");
@@ -186,6 +201,14 @@ async function check(page, name, full = false) {
     await check(page, "a14_momenty_youtube", true);
     await page.click('#dSeg button[data-s="videos"]');
     await page.waitForSelector("text=Обзор новой игры");
+    await page.fill("#wList", "UCwatchWatchWatchWatch01, мусор");
+    await page.click("#wSave");
+    await page.waitForFunction(() => { const t = document.querySelector("#toast"); return !t.hidden && t.innerText.includes("начинается с UC"); },
+      null, { timeout: 15000 }).catch(() => fail("неверный ID канала не отклонён"));
+    await page.fill("#wList", "UCwatchWatchWatchWatch01");
+    await page.click("#wSave");
+    await page.waitForSelector("text=· из списка");
+    step("«Слежу без источника»: канал из списка показан, неверный ID отклонён");
     step("YouTube: стримы — моменты по таймкодам в комментариях; «каналы» — обычные видео");
 
     // отдельное видео через системное окно

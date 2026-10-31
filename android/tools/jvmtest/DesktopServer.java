@@ -100,8 +100,10 @@ public class DesktopServer {
             Arrays.sort(fs);
             for (File f : fs) {
                 if (!f.getName().matches("(?i).*\\.(mp4|mkv|mov|webm)$")) continue;
-                out.put(new JSONObject().put("name", f.getName()).put("path", (src == null ? "_picked" : src.getString("id")) + "/" + f.getName())
-                        .put("size", f.length()).put("mtime", f.lastModified() / 1000.0));
+                JSONObject o = new JSONObject().put("name", f.getName()).put("path", (src == null ? "_picked" : src.getString("id")) + "/" + f.getName())
+                        .put("size", f.length()).put("mtime", f.lastModified() / 1000.0);
+                if (chatFile(f) != null) o.put("chat", true);
+                out.put(o);
             }
             return out;
         }
@@ -139,7 +141,16 @@ public class DesktopServer {
                 if (s.getString("codec_type").equals("audio")) o.put("has_audio", true);
             }
             o.put("has_srt", sidecarSrt(id) != null);
+            o.put("has_chat", chatFile(f) != null);
             return o;
+        }
+
+        static File chatFile(File video) {
+            String n = video.getName(), stem = n.contains(".") ? n.substring(0, n.lastIndexOf('.')) : n;
+            File[] fs = video.getParentFile().listFiles();
+            if (fs == null) return null;
+            for (File c : fs) if (ChatMoments.isChatFor(c.getName(), stem)) return c;
+            return null;
         }
 
         public byte[] frameJpeg(String id, double t, int w) throws Exception {
@@ -253,6 +264,14 @@ public class DesktopServer {
 
         JSONObject moments(JobQueue.Ctx ctx) throws Exception {
             File f = resolve(ctx.params.getString("file"));
+            File chatF = chatFile(f);
+            if (chatF != null) {
+                ChatMoments.Chat chat;
+                try (InputStream in = new FileInputStream(chatF)) { chat = ChatMoments.read(in); }
+                double dur = probe(ctx.params.getString("file")).getDouble("duration");
+                return new JSONObject().put("file", ctx.params.getString("file")).put("length", ctx.params.optInt("length", 10)).put("source", "chat")
+                        .put("chat_messages", chat.n).put("candidates", ChatMoments.find(chat, dur, ctx.params.optInt("length", 10), 8)).put("speech", true);
+            }
             String out = sh("ffmpeg", "-hide_banner", "-nostdin", "-i", f.getPath(), "-vn", "-af",
                     "aresample=8000,asetnsamples=n=8000:p=0,astats=metadata=1:reset=1,ametadata=mode=print:key=lavfi.astats.Overall.RMS_level:file=-",
                     "-f", "null", "-");

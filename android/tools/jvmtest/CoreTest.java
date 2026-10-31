@@ -311,6 +311,68 @@ public class CoreTest {
             }
         });
 
+        // ---------------------------------------------------------------- моменты по чату записи
+        test("чат: TwitchDownloader JSON — всплески находятся, обычный темп не мешает", () -> {
+            StringBuilder j = new StringBuilder("{\"streamer\":{\"name\":\"vasya\"},\"video\":{\"title\":\"Эфир\"},\"comments\":[");
+            List<double[]> ts = new ArrayList<>();
+            Random rnd = new Random(5);
+            for (double t = 0; t < 7200; t += 3 + rnd.nextDouble() * 2) ts.add(new double[]{t, 0});
+            for (int i = 0; i < 70; i++) ts.add(new double[]{1800 + i * 0.2, 1}); // KEKW
+            for (int i = 0; i < 35; i++) ts.add(new double[]{4000 + i * 0.4, 2}); // ахаха
+            ts.sort((a, b) -> Double.compare(a[0], b[0]));
+            for (int i = 0; i < ts.size(); i++) {
+                double[] x = ts.get(i);
+                String msg = x[1] == 1 ? "KEKW KEKW" : x[1] == 2 ? "ахахах \\u0430\\\"" : "привет всем, как дела";
+                if (i > 0) j.append(',');
+                j.append("{\"_id\":\"").append(i).append("\",\"content_offset_seconds\":").append(String.format(Locale.ROOT, "%.3f", x[0]))
+                        .append(",\"commenter\":{\"display_name\":\"Зритель").append(i % 50).append("\",\"name\":\"z\"},")
+                        .append("\"message\":{\"body\":\"").append(msg).append("\",\"fragments\":[{\"text\":\"x\",\"emoticon\":null}],\"user_badges\":[]}}");
+            }
+            j.append("],\"embeddedData\":null}");
+            byte[] data = j.toString().getBytes(StandardCharsets.UTF_8);
+            ChatMoments.Chat chat = ChatMoments.read(new ByteArrayInputStream(data));
+            check(chat.n == ts.size(), "сообщений " + chat.n + " из " + ts.size());
+            check(chat.text[0].equals("привет всем, как дела"), "текст: " + chat.text[0]);
+            JSONArray c = ChatMoments.find(chat, 7300, 30, 8);
+            JSONObject a = c.getJSONObject(0), b = c.getJSONObject(1);
+            check(Math.abs(a.getDouble("start") - 1785) <= 3 && a.getJSONArray("reasons").toString().contains("KEKW"), a.toString());
+            check(Math.abs(b.getDouble("start") - 3985) <= 6, b.toString());
+            check(a.getDouble("score") == 1.0 && a.getDouble("end") - a.getDouble("start") == 30, a.toString());
+            // gzip — так же
+            ByteArrayOutputStream bo = new ByteArrayOutputStream();
+            try (java.util.zip.GZIPOutputStream gz = new java.util.zip.GZIPOutputStream(bo)) { gz.write(data); }
+            check(ChatMoments.read(new ByteArrayInputStream(bo.toByteArray())).n == ts.size(), "gzip");
+        });
+        test("чат: текстовый лог, повтор чата YouTube, массив с time_in_seconds", () -> {
+            String txt = "\uFEFF[0:00:05] vasya: привет\n[0:01:00] petya: ахах\nмусор без времени\n[1:02:03] kolya: KEKW\n";
+            ChatMoments.Chat t = ChatMoments.read(new ByteArrayInputStream(txt.getBytes(StandardCharsets.UTF_8)));
+            check(t.n == 3 && t.t[2] == 3723 && t.text[1].equals("ахах"), "текст: " + t.n + " " + t.t[2] + " " + t.text[1]);
+            String utc = "[2026-10-28 23:59:58 UTC] a: раз\n[2026-10-29 00:00:10 UTC] b: два\n";
+            ChatMoments.Chat u = ChatMoments.read(new ByteArrayInputStream(utc.getBytes(StandardCharsets.UTF_8)));
+            check(u.n == 2 && u.t[0] == 0 && u.t[1] == 12, "UTC через полночь: " + u.t[1]);
+            String clock = "[23:59:50] a: старт\n[23:59:55] b: ахах\n[00:00:20] c: после полуночи\n";
+            ChatMoments.Chat ck = ChatMoments.read(new ByteArrayInputStream(clock.getBytes(StandardCharsets.UTF_8)));
+            check(ck.n == 3 && ck.t[0] == 0 && ck.t[1] == 5 && ck.t[2] == 30, "лог по часам: " + ck.t[1] + " " + ck.t[2]);
+            String yt = "{\"replayChatItemAction\":{\"actions\":[{\"addChatItemAction\":{\"item\":{\"liveChatTextMessageRenderer\":{\"message\":{\"runs\":[{\"text\":\"ору 😂\"}]},"
+                    + "\"authorName\":{\"simpleText\":\"Ник\"}}}}}],\"videoOffsetTimeMsec\":\"65500\"}}\n"
+                    + "{\"replayChatItemAction\":{\"actions\":[],\"videoOffsetTimeMsec\":\"70000\"}}\n";
+            ChatMoments.Chat y = ChatMoments.read(new ByteArrayInputStream(yt.getBytes(StandardCharsets.UTF_8)));
+            check(y.n == 2 && Math.abs(y.t[0] - 65.5) < 1e-3 && y.text[0].equals("ору 😂"), "YouTube: " + y.n + " " + y.t[0] + " " + y.text[0]);
+            String arr = "[{\"message\":\"гол!!!\",\"author\":{\"name\":\"x\"},\"time_in_seconds\":12.5},{\"time_in_seconds\":-3,\"message\":\"до начала\"}]";
+            ChatMoments.Chat ar = ChatMoments.read(new ByteArrayInputStream(arr.getBytes(StandardCharsets.UTF_8)));
+            check(ar.n == 1 && ar.t[0] == 12.5f && ar.text[0].equals("гол!!!"), "массив: " + ar.n);
+            check(ChatMoments.read(new ByteArrayInputStream("просто текст".getBytes(StandardCharsets.UTF_8))).n == 0, "не чат");
+            check(ChatMoments.find(new ChatMoments.Chat(), 100, 30, 8).length() == 0, "пустой чат");
+        });
+        test("чат: какой файл считается чатом к видео", () -> {
+            check(ChatMoments.isChatFor("stream_2026-10-28.json", "stream_2026-10-28"), "json");
+            check(ChatMoments.isChatFor("stream_2026-10-28.chat.txt", "stream_2026-10-28"), "chat.txt");
+            check(ChatMoments.isChatFor("Stream_2026-10-28_chat.json.gz", "stream_2026-10-28"), "gz, регистр");
+            check(!ChatMoments.isChatFor("stream_2026-10-28.srt", "stream_2026-10-28"), "srt — не чат");
+            check(!ChatMoments.isChatFor("stream_2026-10-29.json", "stream_2026-10-28"), "чужая дата");
+            check(Discover.twitchLogin("https://www.twitch.tv/Streamer_1/videos?x=1").equals("streamer_1"), "логин из ссылки");
+        });
+
         // ---------------------------------------------------------------- «Моменты»
         test("Twitch: клипы зрителей → моменты в записях эфиров, новый ключ доступа при 401", () -> {
             Store store = new Store(Files.createTempDirectory("tw").toFile());

@@ -66,11 +66,11 @@ public final class Discover {
         out.put("configured", !id.isEmpty() && !secret.isEmpty());
         JSONArray list = new JSONArray();
         out.put("streamers", list);
-        List<JSONObject> srcs = sourcesWith("twitch_login");
+        List<JSONObject> srcs = targets("twitch_login", se.optString("watch_twitch"));
         out.put("has_sources", !srcs.isEmpty());
         if (!out.getBoolean("configured") || srcs.isEmpty()) return out;
         for (JSONObject src : srcs) {
-            String login = src.optString("twitch_login").trim().toLowerCase().replaceAll("^.*twitch\\.tv/", "").replaceAll("[^a-z0-9_]", "");
+            String login = twitchLogin(src.optString("twitch_login"));
             JSONObject st = cached("tw:" + login, LIST_TTL, refresh);
             if (st == null) {
                 st = new JSONObject();
@@ -81,7 +81,8 @@ public final class Discover {
                     st.put("ok", false).put("error", e.getMessage());
                 }
             }
-            st.put("source_id", src.optString("id")).put("title", src.optString("title")).put("login", login);
+            st.put("source_id", src.optString("id")).put("title", src.optString("title")).put("login", login)
+                    .put("watch", src.optBoolean("watch"));
             attachLinks(st.optJSONArray("vods"));
             list.put(st);
         }
@@ -232,7 +233,7 @@ public final class Discover {
         out.put("configured", !key.isEmpty());
         JSONArray list = new JSONArray();
         out.put("channels", list);
-        List<JSONObject> srcs = sourcesWith("youtube_channel_id");
+        List<JSONObject> srcs = targets("youtube_channel_id", store.settings().optString("watch_youtube"));
         out.put("has_sources", !srcs.isEmpty());
         if (key.isEmpty() || srcs.isEmpty()) return out;
         for (JSONObject src : srcs) {
@@ -259,7 +260,8 @@ public final class Discover {
             }
             attachLinks(vids);
             res.put("videos", vids);
-            res.put("source_id", src.optString("id")).put("title", src.optString("title")).put("channel_id", ch);
+            res.put("source_id", src.optString("id")).put("title", src.optString("title")).put("channel_id", ch)
+                    .put("watch", src.optBoolean("watch"));
             list.put(res);
         }
         return out;
@@ -448,12 +450,34 @@ public final class Discover {
 
     // ================================================================== общее
 
-    private List<JSONObject> sourcesWith(String field) throws JSONException {
+    /** «https://www.twitch.tv/Streamer_1» → «streamer_1». */
+    public static String twitchLogin(String s) {
+        return (s == null ? "" : s).trim().toLowerCase(java.util.Locale.ROOT).replaceAll("^.*twitch\\.tv/", "")
+                .replaceAll("[/?#].*$", "").replaceAll("[^a-z0-9_]", "");
+    }
+
+    /**
+     * Кого показывать: источники с заполненным полем (можно несколько через запятую) и список «Слежу без источника».
+     * У записей из списка source_id пустой — файл для нарезки выбирается кнопкой «Выбрать видео на телефоне».
+     */
+    private List<JSONObject> targets(String field, String watch) throws JSONException {
         List<JSONObject> out = new ArrayList<>();
+        java.util.Set<String> seen = new java.util.HashSet<>();
         JSONArray s = store.sources().getJSONArray("sources");
         for (int i = 0; i < s.length(); i++) {
             JSONObject o = s.getJSONObject(i);
-            if (!o.optString(field).trim().isEmpty() && o.optBoolean("enabled", true)) out.add(o);
+            if (!o.optBoolean("enabled", true)) continue;
+            String[] vals = o.optString(field).split("[,;\\s]+");
+            for (String v : vals) {
+                v = v.trim();
+                if (v.isEmpty() || !seen.add(v.toLowerCase(java.util.Locale.ROOT))) continue;
+                out.add(new JSONObject().put("id", o.optString("id")).put("title", vals.length > 1 ? v : o.optString("title")).put(field, v));
+            }
+        }
+        for (String v : (watch == null ? "" : watch).split("[,;\\s]+")) {
+            v = v.trim();
+            if (v.isEmpty() || !seen.add(v.toLowerCase(java.util.Locale.ROOT))) continue;
+            out.add(new JSONObject().put("id", "").put("title", v).put(field, v).put("watch", true));
         }
         return out;
     }

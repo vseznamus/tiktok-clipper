@@ -20,7 +20,7 @@ import java.util.Locale;
  * другие приложения на телефоне не смогут управлять нарезкой.
  */
 public class Api implements MiniHttp.Handler {
-    public static final String VERSION = "1.2.0-android";
+    public static final String VERSION = "1.3.0-android";
     public static final String COOKIE = "clipper_k";
 
     private final Store store;
@@ -188,6 +188,7 @@ public class Api implements MiniHttp.Handler {
                 if (what.equals("ytmoments") && m.equals("GET")) {
                     return MiniHttp.Response.json(discover.youtubeMoments(r.q("video", ""), Double.parseDouble(r.q("duration", "0")), refresh));
                 }
+                if (what.equals("chats") && m.equals("GET")) return MiniHttp.Response.json(chats());
                 if (what.equals("link") && m.equals("POST")) {
                     JSONObject b = r.json();
                     discover.link(b.optString("key"), b.optString("file"));
@@ -337,6 +338,21 @@ public class Api implements MiniHttp.Handler {
                 case "bitrate_mbps":
                     patch.put(k, Math.min(30, Math.max(2, b.optInt(k, 10))));
                     break;
+                case "watch_twitch":
+                case "watch_youtube": {
+                    // список через запятую: логины Twitch / ID каналов YouTube (UC…)
+                    StringBuilder sb = new StringBuilder();
+                    for (String x : b.optString(k, "").split("[,;\\s]+")) {
+                        String v = k.equals("watch_twitch") ? Discover.twitchLogin(x) : x.trim();
+                        if (v.isEmpty() || v.length() > 40) continue;
+                        if (k.equals("watch_youtube") && !v.matches("UC[A-Za-z0-9_-]{10,40}")) throw new ApiError(400, "ID канала YouTube начинается с UC: " + v);
+                        if (sb.length() > 0) sb.append(", ");
+                        sb.append(v);
+                    }
+                    patch.put(k, sb.toString());
+                    discover.clearCache();
+                    break;
+                }
                 case "twitch_client_id":
                 case "twitch_client_secret":
                 case "youtube_api_key": {
@@ -351,6 +367,28 @@ public class Api implements MiniHttp.Handler {
             }
         }
         return maskSecrets(store.saveSettings(patch));
+    }
+
+    /** Записи в папках источников, рядом с которыми лежит файл чата. */
+    private JSONObject chats() throws Exception {
+        JSONArray items = new JSONArray(), srcs = store.sources().getJSONArray("sources");
+        for (int i = 0; i < srcs.length(); i++) {
+            JSONObject src = srcs.getJSONObject(i);
+            if (!src.optBoolean("enabled", true)) continue;
+            JSONArray fs;
+            try {
+                fs = platform.listFiles(src);
+            } catch (Exception e) {
+                continue; // нет доступа к папке — источник пропускаем
+            }
+            for (int k = 0; k < fs.length(); k++) {
+                JSONObject f = fs.getJSONObject(k);
+                if (!f.optBoolean("chat")) continue;
+                items.put(new JSONObject().put("source_id", src.optString("id")).put("title", src.optString("title"))
+                        .put("name", f.optString("name")).put("path", f.optString("path")).put("mtime", f.optDouble("mtime")));
+            }
+        }
+        return new JSONObject().put("items", items);
     }
 
     private JSONObject cleanSource(JSONObject b) throws JSONException {
