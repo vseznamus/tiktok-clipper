@@ -70,7 +70,7 @@ async function pollJob(id, onUpdate) {
 function bar(frac) { return `<div class="progress"><i style="width:${Math.round((frac || 0) * 100)}%"></i></div>`; }
 
 // ------------------------------------------------------------------ роутер
-const routes = { today: viewToday, discover: viewDiscover, clip: viewClip, cam: viewCam, queue: viewQueue, clips: viewClips,
+const routes = { today: viewToday, discover: viewDiscover, ru: viewRu, clip: viewClip, cam: viewCam, queue: viewQueue, clips: viewClips,
   clipview: viewClipView, settings: viewSettings, source: viewSource };
 
 function parseHash() {
@@ -948,6 +948,61 @@ async function tmdbSource(id, refresh) {
   }));
 }
 
+// ------------------------------------------------------------------ «Русское»: русские и советские сериалы и фильмы (TMDB)
+const RU_KINDS = [["popular", "Популярные сейчас"], ["top", "Лучшие по рейтингу"], ["new", "Новинки за год"]];
+async function viewRu(_arg, q) {
+  const seq = S.seq;
+  await loadCfg();
+  if (staleSince(seq)) return;
+  S.ru = S.ru || { type: "tv", kind: "popular" };
+  const st = S.ru;
+  app.innerHTML = `<h1>Русское</h1>
+  <div class="seg" id="ruType"><button data-t="tv" class="${st.type === "tv" ? "on" : ""}">Сериалы</button><button data-t="movie" class="${st.type === "movie" ? "on" : ""}">Фильмы</button></div>
+  <div class="seg seg3" id="ruKind" style="margin-top:8px">${RU_KINDS.map(([k, n]) => `<button data-k="${k}" class="${st.kind === k ? "on" : ""}">${n}</button>`).join("")}</div>
+  <p class="muted small" style="margin:10px 2px">Русские и советские ${st.type === "tv" ? "сериалы" : "фильмы"} по данным TMDB. «Добавить в источники» —
+    и дальше как обычно: выберите папку, куда положили видео, и автоплан найдёт моменты.</p>
+  <div id="ruBox"><p class="muted pad">Загружаю…</p></div>`;
+  $$("#ruType button").forEach((b) => (b.onclick = () => { st.type = b.dataset.t; viewRu(); }));
+  $$("#ruKind button").forEach((b) => (b.onclick = () => { st.kind = b.dataset.k; viewRu(); }));
+  let page = 1, items = [];
+  const box = $("#ruBox");
+  const load = async (refresh) => {
+    let d;
+    try { d = await api(`/api/tmdb/ru?type=${st.type}&kind=${st.kind}&page=${page}` + (refresh ? "&refresh=1" : "")); }
+    catch (e) { box.innerHTML = `<p class="err pad">${esc(e.message)}</p>`; return; }
+    if (staleSince(seq) || !box.isConnected) return;
+    if (!d.configured) {
+      box.innerHTML = `<div class="card stack"><h2>Нужен ключ TMDB</h2>
+        <p>Списки берутся из TMDB. Ключ бесплатный: themoviedb.org → «Настройки» → «API» (пошагово — в инструкции, раздел 4.2).</p>
+        <a class="btn primary" href="#/settings">Ввести ключ в «Настройках»</a></div>`;
+      return;
+    }
+    items = items.concat(d.items || []);
+    box.innerHTML = `<div class="card">${items.length ? items.map((t, i) => `<div class="ruitem">
+        <b class="wrap">${i + 1}. ${esc(t.title)}${t.year ? ` (${esc(t.year)})` : ""}</b>
+        <span class="small">★ ${fmtRating(t.rating)} <span class="muted">· ${t.votes} голосов</span>${t.source_id ? ' · <span class="ok">есть у вас</span>' : ""}</span>
+        ${t.overview ? `<span class="muted small wrap">${esc(t.overview)}</span>` : ""}
+        <div class="row">${t.source_id ? `<a class="btn sm" href="#/source/${encodeURIComponent(t.source_id)}">Открыть источник</a>`
+          : `<button class="btn sm primary" data-add="${i}">Добавить в источники</button>`}
+          <a class="btn sm ghost" target="_blank" rel="noopener" href="https://www.themoviedb.org/${t.type}/${t.id}?language=ru-RU">TMDB ↗</a></div></div>`).join("")
+        : `<p class="muted">Ничего не нашлось.</p>`}
+      ${d.page < d.total_pages && page < 20 ? `<div style="height:10px"></div><button class="btn ghost" id="ruMore">Показать ещё</button>` : ""}</div>`;
+    $$("[data-add]", box).forEach((b) => (b.onclick = async () => {
+      const t = items[+b.dataset.add];
+      b.disabled = true;
+      const saved = await api("/api/sources", { method: "POST", body: { type: t.type === "tv" ? "series" : "movie", title: t.title,
+        tmdb_id: t.id, tmdb_type: t.type, enabled: true } }).catch(() => null);
+      if (!saved) { b.disabled = false; return; }
+      await loadCfg(true);
+      toast("Добавлено. Выберите папку с видео и сохраните");
+      go(`#/source/${encodeURIComponent(saved.id)}`);
+    }));
+    const more = $("#ruMore", box);
+    if (more) more.onclick = () => { more.disabled = true; page++; load(false); };
+  };
+  load(!!(q && q.get && q.get("refresh") === "1"));
+}
+
 function appAsrCard(st, se) {
   const models = st.asr_models || [];
   const langs = [["auto", "Определять автоматически"], ["ru", "Русский"], ["en", "English"], ["uk", "Українська"]];
@@ -1079,5 +1134,8 @@ async function viewSource(id) {
 
 // ------------------------------------------------------------------ старт
 if (!APP && "serviceWorker" in navigator && window.isSecureContext) navigator.serviceWorker.register("/sw.js").catch(() => {});
-if (APP) { const t = $('#nav a[data-tab="discover"]'); t.hidden = false; $("#nav").classList.add("n6"); }
+if (APP) {
+  for (const k of ["discover", "ru"]) $(`#nav a[data-tab="${k}"]`).hidden = false;
+  $("#nav").classList.add("n7");
+}
 route(); refreshBadge();

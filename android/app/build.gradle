@@ -13,8 +13,8 @@ android {
         applicationId 'ru.tiktokclipper'
         minSdk 26          // Android 8.0
         targetSdk 34
-        versionCode 8
-        versionName '1.5.0'
+        versionCode 9
+        versionName '1.6.0'
         ndk {
             // телефоны: 64 и 32 бита ARM (Vosk — на обоих, Whisper — только на 64-битных)
             abiFilters 'arm64-v8a', 'armeabi-v7a'

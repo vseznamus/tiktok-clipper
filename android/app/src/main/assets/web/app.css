@@ -121,6 +121,8 @@ input[type=range]::-moz-range-thumb { width: 26px; height: 26px; border-radius: 
 #nav a.on { color: var(--accent); }
 #nav a[hidden] { display: none; }
 #nav.n6 a { font-size: 11px; letter-spacing: -.2px; }
+#nav.n7 a { font-size: 10px; letter-spacing: -.3px; }
+#nav.n7 a svg { width: 24px; height: 24px; }
 #qbadge { position: absolute; top: 6px; left: 54%; min-width: 20px; height: 20px; padding: 0 5px; border-radius: 10px; background: var(--err);
   color: #fff; font-size: 12px; line-height: 20px; text-align: center; }
 #toast { position: fixed; left: 16px; right: 16px; bottom: calc(var(--nav-h) + env(safe-area-inset-bottom) + 12px);
@@ -141,3 +143,7 @@ details.card > summary { cursor: pointer; min-height: 32px; display: flex; align
 .mom .row .btn { width: auto; flex: 1; }
 .sheet { position: fixed; inset: 0; background: rgba(0, 0, 0, .6); z-index: 20; display: flex; align-items: flex-end; }
 .sheet > div { background: var(--card); width: 100%; max-height: 85vh; overflow-y: auto; border-radius: 18px 18px 0 0; padding: 16px 16px calc(16px + env(safe-area-inset-bottom)); }
+
+/* «Русское» */
+.ruitem { display: flex; flex-direction: column; gap: 6px; padding: 12px; border-radius: 12px; background: var(--card2); margin-top: 8px; }
+.ruitem .row .btn { width: auto; flex: 1; }

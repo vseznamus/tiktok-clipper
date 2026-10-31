@@ -47,6 +47,35 @@ public final class Tmdb {
         return out;
     }
 
+    /**
+     * Русские (и советские) сериалы и фильмы — язык оригинала русский.
+     * kind: popular — популярные сейчас, top — лучшие по рейтингу (не меньше 50/100 голосов), new — новинки за год.
+     */
+    public JSONObject russian(String type, String kind, int page, boolean refresh) throws Exception {
+        JSONObject out = new JSONObject().put("configured", configured());
+        if (!configured()) return out;
+        String t = "movie".equals(type) ? "movie" : "tv";
+        StringBuilder q = new StringBuilder("discover/").append(t).append("?language=ru-RU&include_adult=false&with_original_language=ru")
+                .append("&page=").append(Math.max(1, Math.min(20, page)));
+        switch (kind) {
+            case "top":
+                q.append("&sort_by=vote_average.desc&vote_count.gte=").append(t.equals("tv") ? 50 : 100);
+                break;
+            case "new": {
+                String since = java.time.LocalDate.now().minusYears(1).toString();
+                q.append("&sort_by=popularity.desc&").append(t.equals("tv") ? "first_air_date.gte=" : "primary_release_date.gte=").append(since)
+                        .append("&vote_count.gte=5");
+                break;
+            }
+            default:
+                q.append("&sort_by=popularity.desc");
+        }
+        JSONObject r = get(q.toString(), LIST_TTL, refresh);
+        out.put("items", mark(items(r, t, 20), store.sources().getJSONArray("sources")));
+        out.put("page", r.optInt("page", page)).put("total_pages", r.optInt("total_pages", 1));
+        return out;
+    }
+
     public JSONArray search(String q) throws Exception {
         if (q.trim().isEmpty()) return new JSONArray();
         JSONArray all = items(get("search/multi?language=ru-RU&include_adult=false&query=" + Net.enc(q.trim()), LIST_TTL, false), null, 20);

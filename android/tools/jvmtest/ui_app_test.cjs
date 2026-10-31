@@ -190,6 +190,25 @@ async function check(page, name, full = false) {
     await page.waitForFunction(() => { const t = document.querySelector("#toast"); return !t.hidden && t.innerText.includes("опубликовано"); }, null, { timeout: 15000 });
     step("«Сегодня»: момент по плану, клип собран → «Опубликовано»");
 
+    // «Русское»: русские сериалы и фильмы из TMDB → «Добавить в источники»
+    await page.click('#nav a[data-tab="ru"]');
+    await page.waitForSelector(".ruitem");
+    const ru = await page.innerText("#ruBox");
+    if (!ru.includes("Кухня") || !ru.includes("Ликвидация")) fail("русские сериалы: " + ru.slice(0, 300));
+    await noStreams("«Русское»");
+    await check(page, "a18_russkoe_serialy", true);
+    await page.click('#ruType button[data-t="movie"]');
+    await page.waitForFunction(() => document.querySelector("#ruBox").innerText.includes("Брат"));
+    await page.click('#ruKind button[data-k="top"]');
+    await page.waitForSelector(".ruitem");
+    await check(page, "a19_russkoe_filmy", true);
+    await page.click("[data-add] >> nth=0");
+    await page.waitForSelector("#bFolder");
+    if ((await page.inputValue("#sT")) !== "Брат") fail("источник не создан из TMDB");
+    step("«Русское»: русские сериалы и фильмы из TMDB (популярные, лучшие), «Добавить в источники» → открыт источник «Брат», осталось выбрать папку");
+    await page.click('#nav a[data-tab="ru"]');
+    await page.waitForFunction(() => document.querySelector("#ruBox") && document.querySelector("#ruBox").innerText.includes("есть у вас"));
+
     // отдельное видео через системное окно
     await page.goto(BASE + "/#/clip");
     await page.waitForSelector("#srcSel");

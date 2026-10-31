@@ -368,6 +368,31 @@ public class CoreTest {
                 check(e.getMessage().contains("не принял ключ"), e.getMessage());
             }
         });
+        test("TMDB «Русское»: язык оригинала ru, лучшие — с порогом голосов, новинки — за год, пометка «есть у вас»", () -> {
+            Store store = new Store(Files.createTempDirectory("ru").toFile());
+            store.upsertSource(new JSONObject().put("id", "kuhnya").put("type", "series").put("title", "Кухня").put("tmdb_id", 63770).put("tmdb_type", "tv"));
+            final List<String> urls = new ArrayList<>();
+            Tmdb t = new Tmdb(store, (url, h, b) -> {
+                urls.add(url);
+                return new Net.Resp(200, "{\"page\":1,\"total_pages\":3,\"results\":[{\"id\":63770,\"name\":\"Кухня\",\"first_air_date\":\"2012-11-12\",\"vote_average\":7.9,\"vote_count\":300},"
+                        + "{\"id\":7,\"name\":\"Другой сериал\",\"vote_average\":7.1,\"vote_count\":80}]}");
+            });
+            check(!t.russian("tv", "popular", 1, false).getBoolean("configured"), "без ключа");
+            store.saveSettings(new JSONObject().put("tmdb_key", "k123"));
+            JSONObject pop = t.russian("tv", "popular", 1, false);
+            JSONArray it = pop.getJSONArray("items");
+            check(it.length() == 2 && it.getJSONObject(0).getString("source_id").equals("kuhnya") && !it.getJSONObject(1).has("source_id"), it.toString());
+            check(pop.getInt("total_pages") == 3, "страницы");
+            String u0 = urls.get(0);
+            check(u0.contains("discover/tv?") && u0.contains("with_original_language=ru") && u0.contains("sort_by=popularity.desc") && u0.contains("language=ru-RU"), u0);
+            t.russian("movie", "top", 2, false);
+            String u1 = urls.get(1);
+            check(u1.contains("discover/movie?") && u1.contains("sort_by=vote_average.desc") && u1.contains("vote_count.gte=100") && u1.contains("page=2"), u1);
+            t.russian("tv", "new", 1, false);
+            check(urls.get(2).contains("first_air_date.gte=" + LocalDate.now().minusYears(1)), urls.get(2));
+            t.russian("tv", "popular", 1, false);
+            check(urls.size() == 3, "кэш списка");
+        });
         test("оценка сцен: эмоции в репликах поднимают момент при ровном звуке", () -> {
             double[] lv = new double[1200];
             Arrays.fill(lv, -30);

@@ -20,7 +20,7 @@ import java.util.Locale;
  * другие приложения на телефоне не смогут управлять нарезкой.
  */
 public class Api implements MiniHttp.Handler {
-    public static final String VERSION = "1.5.0-android";
+    public static final String VERSION = "1.6.0-android";
     public static final String COOKIE = "clipper_k";
 
     private final Store store;
@@ -184,6 +184,9 @@ public class Api implements MiniHttp.Handler {
                 boolean refresh = "1".equals(r.q("refresh", ""));
                 String what = seg.length > 1 ? seg[1] : "";
                 if (what.equals("lists") && m.equals("GET")) return MiniHttp.Response.json(tmdb.lists(refresh));
+                if (what.equals("ru") && m.equals("GET")) {
+                    return MiniHttp.Response.json(tmdb.russian(r.q("type", "tv"), r.q("kind", "popular"), Integer.parseInt(r.q("page", "1")), refresh));
+                }
                 if (what.equals("search") && m.equals("GET")) return MiniHttp.Response.json(new JSONObject().put("results", tmdb.search(r.q("q", ""))));
                 if (what.equals("source") && seg.length == 3 && m.equals("GET")) {
                     JSONObject src = store.getSource(seg[2]);
@@ -438,7 +441,7 @@ public class Api implements MiniHttp.Handler {
 
     private JSONObject cleanSource(JSONObject b) throws JSONException {
         JSONObject s = new JSONObject();
-        for (String k : new String[]{"id", "type", "title", "folder", "folder_uri", "enabled", "profile"}) {
+        for (String k : new String[]{"id", "type", "title", "folder", "folder_uri", "enabled", "profile", "tmdb_id", "tmdb_type"}) {
             if (b.has(k) && !(k.equals("id") && b.isNull(k))) s.put(k, b.get(k));
         }
         return s;

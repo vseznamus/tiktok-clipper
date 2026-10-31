@@ -42,7 +42,19 @@ public class DesktopServer {
     static Net.Resp fakeNet(String url, Map<String, String> h, String body) {
         String j;
         if (url.contains("api.themoviedb.org")) {
-            if (url.contains("/trending/")) j = "{\"results\":[{\"id\":1396,\"media_type\":\"tv\",\"name\":\"Во все тяжкие\",\"original_name\":\"Breaking Bad\",\"first_air_date\":\"2008-01-20\",\"vote_average\":8.9,\"vote_count\":15000},"
+            if (url.contains("/discover/")) {
+                boolean tv = url.contains("/discover/tv");
+                String[][] r = tv ? new String[][]{{"63770", "Кухня", "2012-11-12", "7.9"}, {"81", "Ликвидация", "2007-12-04", "8.5"}}
+                        : new String[][]{{"20992", "Брат", "1997-05-17", "8.0"}, {"5", "Москва слезам не верит", "1980-02-11", "7.9"}};
+                StringBuilder b = new StringBuilder("{\"page\":1,\"total_pages\":1,\"results\":[");
+                for (int i = 0; i < r.length; i++) {
+                    if (i > 0) b.append(',');
+                    b.append("{\"id\":").append(r[i][0]).append(tv ? ",\"name\":" : ",\"title\":").append(JSONObject.quote(r[i][1]))
+                            .append(tv ? ",\"first_air_date\":\"" : ",\"release_date\":\"").append(r[i][2]).append("\",\"vote_average\":").append(r[i][3])
+                            .append(",\"vote_count\":500,\"overview\":\"Описание для теста.\"}");
+                }
+                j = b.append("]}").toString();
+            } else if (url.contains("/trending/")) j = "{\"results\":[{\"id\":1396,\"media_type\":\"tv\",\"name\":\"Во все тяжкие\",\"original_name\":\"Breaking Bad\",\"first_air_date\":\"2008-01-20\",\"vote_average\":8.9,\"vote_count\":15000},"
                     + "{\"id\":603,\"media_type\":\"movie\",\"title\":\"Матрица\",\"release_date\":\"1999-03-31\",\"vote_average\":8.2,\"vote_count\":26000}]}";
             else if (url.contains("/top_rated")) j = "{\"results\":[{\"id\":1396,\"name\":\"Во все тяжкие\",\"title\":\"Во все тяжкие\",\"vote_average\":8.9}]}";
             else if (url.contains("/search/")) j = "{\"results\":[{\"id\":1396,\"media_type\":\"tv\",\"name\":\"Во все тяжкие\",\"original_name\":\"Breaking Bad\",\"vote_average\":8.9}]}";
