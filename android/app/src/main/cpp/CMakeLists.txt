@@ -41,10 +41,12 @@ if (NAREZKA_MODULES_DIR)
     foreach (_t IN LISTS _ggml_targets)
         get_target_property(_type ${_t} TYPE)
         if (_type STREQUAL "MODULE_LIBRARY")
-            add_custom_command(TARGET ${_t} POST_BUILD
-                    COMMAND ${CMAKE_COMMAND} -E make_directory ${NAREZKA_MODULES_DIR}/${ANDROID_ABI}
-                    COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:${_t}> ${NAREZKA_MODULES_DIR}/${ANDROID_ABI}/)
             add_dependencies(narezka_whisper ${_t})
+            list(APPEND _copy COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:${_t}> ${NAREZKA_MODULES_DIR}/${ANDROID_ABI}/)
         endif ()
     endforeach ()
+    # шаг после сборки можно повесить только на цель из этой папки — копируем после сборки моста
+    add_custom_command(TARGET narezka_whisper POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E make_directory ${NAREZKA_MODULES_DIR}/${ANDROID_ABI}
+            ${_copy})
 endif ()
