@@ -44,6 +44,7 @@ public final class Engine {
         h.put("clip", jobs::clip);
         h.put("rebuild", jobs::rebuild);
         h.put("moments", jobs::moments);
+        h.put("plan", jobs::plan);
         h.put("model", jobs::downloadModel);
         queue = new JobQueue(store.jobsFile(), h);
         api = new Api(store, platform, queue, token);

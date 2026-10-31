@@ -311,6 +311,163 @@ public class CoreTest {
             }
         });
 
+        // ---------------------------------------------------------------- TMDB, оценка сцен, автоплан
+        test("серия из имени файла: S01E05, 1x05, «2 сезон 3 серия», «серия 7»", () -> {
+            check(Arrays.equals(Tmdb.episodeOf("Breaking.Bad.S01E05.1080p.mkv"), new int[]{1, 5}), "S01E05");
+            check(Arrays.equals(Tmdb.episodeOf("bb s2 e10.mp4"), new int[]{2, 10}), "s2 e10");
+            check(Arrays.equals(Tmdb.episodeOf("Lost 3x07.avi"), new int[]{3, 7}), "3x07");
+            check(Arrays.equals(Tmdb.episodeOf("Во все тяжкие 2 сезон 3 серия.mp4"), new int[]{2, 3}), "2 сезон 3 серия");
+            check(Arrays.equals(Tmdb.episodeOf("Сезон 4 - Серия 12.mkv"), new int[]{4, 12}), "Сезон 4 - Серия 12");
+            check(Arrays.equals(Tmdb.episodeOf("серия 7.mp4"), new int[]{1, 7}), "серия 7");
+            check(Tmdb.episodeOf("Матрица 1999 1080p.mkv") == null, "фильм — не серия");
+        });
+        final Discover.Http tmdbNet = (url, h, body) -> {
+            check(url.startsWith("https://api.themoviedb.org/3/") && url.contains("api_key=k123"), url);
+            if (url.contains("/trending/all/week")) return new Discover.Resp(200, "{\"results\":[{\"id\":1396,\"media_type\":\"tv\",\"name\":\"Во все тяжкие\",\"original_name\":\"Breaking Bad\",\"first_air_date\":\"2008-01-20\",\"vote_average\":8.9,\"vote_count\":15000},{\"id\":5,\"media_type\":\"person\",\"name\":\"x\"},{\"id\":603,\"media_type\":\"movie\",\"title\":\"Матрица\",\"original_title\":\"The Matrix\",\"release_date\":\"1999-03-31\",\"vote_average\":8.2,\"vote_count\":26000}]}");
+            if (url.contains("/tv/top_rated")) return new Discover.Resp(200, "{\"results\":[{\"id\":1396,\"name\":\"Во все тяжкие\",\"original_name\":\"Breaking Bad\",\"vote_average\":8.9}]}");
+            if (url.contains("/movie/top_rated")) return new Discover.Resp(200, "{\"results\":[{\"id\":238,\"title\":\"Крёстный отец\",\"vote_average\":8.7}]}");
+            if (url.contains("/search/multi")) {
+                if (url.contains("%D0%94%D0%BE%D0%BA%D1%82%D0%BE%D1%80")) // «Доктор» — несколько вариантов
+                    return new Discover.Resp(200, "{\"results\":[{\"id\":1,\"media_type\":\"tv\",\"name\":\"Доктор Хаус\"},{\"id\":2,\"media_type\":\"tv\",\"name\":\"Доктор Кто\"}]}");
+                return new Discover.Resp(200, "{\"results\":[{\"id\":1396,\"media_type\":\"tv\",\"name\":\"Во все тяжкие\",\"original_name\":\"Breaking Bad\"}]}");
+            }
+            if (url.contains("/tv/1396/season/1")) return new Discover.Resp(200, "{\"episodes\":[{\"episode_number\":1,\"name\":\"Пилот\",\"vote_average\":7.5,\"vote_count\":50},"
+                    + "{\"episode_number\":2,\"name\":\"Кот в мешке\",\"vote_average\":9.0,\"vote_count\":50},{\"episode_number\":3,\"name\":\"…и мешок в реке\",\"vote_average\":8.0,\"vote_count\":50},"
+                    + "{\"episode_number\":4,\"name\":\"Нет файла\",\"vote_average\":9.9,\"vote_count\":90}]}");
+            if (url.contains("/tv/1396/season/2")) return new Discover.Resp(200, "{\"episodes\":[{\"episode_number\":1,\"name\":\"Семь тридцать семь\",\"vote_average\":9.5,\"vote_count\":60}]}");
+            if (url.contains("/tv/1396")) return new Discover.Resp(200, "{\"name\":\"Во все тяжкие\",\"first_air_date\":\"2008-01-20\",\"vote_average\":8.9,\"vote_count\":15000,"
+                    + "\"seasons\":[{\"season_number\":0},{\"season_number\":1},{\"season_number\":2}]}");
+            return new Discover.Resp(404, "{}");
+        };
+        test("TMDB: тренды с пометкой «есть у вас», автопривязка сериала, серии по рейтингу с файлами", () -> {
+            Store store = new Store(Files.createTempDirectory("tmdb").toFile());
+            store.saveSettings(new JSONObject().put("tmdb_key", "k123"));
+            store.upsertSource(new JSONObject().put("id", "bb").put("type", "series").put("title", "Во все тяжкие"));
+            store.upsertSource(new JSONObject().put("id", "doc").put("type", "series").put("title", "Доктор"));
+            Tmdb t = new Tmdb(store, tmdbNet);
+            JSONObject l = t.lists(false);
+            JSONArray tr = l.getJSONArray("trending");
+            check(tr.length() == 2 && tr.getJSONObject(0).getString("source_id").equals("bb") && !tr.getJSONObject(1).has("source_id"), tr.toString());
+            check(tr.getJSONObject(1).getString("year").equals("1999") && tr.getJSONObject(1).getString("type").equals("movie"), "фильм");
+            JSONArray files = new JSONArray();
+            for (String n : new String[]{"Breaking.Bad.S01E01.mkv", "Breaking.Bad.S01E02.mkv", "Breaking.Bad.S01E03.mkv", "Breaking.Bad.S02E01.mkv"})
+                files.put(new JSONObject().put("name", n).put("path", "bb/" + n));
+            JSONObject info = t.forSource(store.getSource("bb"), files, false);
+            check(info.getJSONObject("match").getLong("id") == 1396 && store.getSource("bb").optLong("tmdb_id") == 1396, "автопривязка");
+            JSONArray eps = info.getJSONArray("episodes");
+            check(eps.getJSONObject(0).getString("file").equals("bb/Breaking.Bad.S02E01.mkv"), "лучшая серия с файлом первой: " + eps.getJSONObject(0));
+            check(eps.getJSONObject(1).getString("file").endsWith("S01E02.mkv"), "вторая");
+            check(!eps.getJSONObject(4).has("file") && eps.getJSONObject(4).getString("name").equals("Нет файла"), "серии без файла — в конце");
+            JSONObject doc = t.forSource(store.getSource("doc"), new JSONArray(), false);
+            check(doc.isNull("match") && doc.getJSONArray("candidates").length() == 2, "несколько вариантов — спросить: " + doc);
+            Tmdb bad = new Tmdb(store, (url, h, b) -> new Discover.Resp(401, "{}"));
+            try {
+                bad.lists(true);
+                check(false, "ожидалась ошибка ключа");
+            } catch (ApiError e) {
+                check(e.getMessage().contains("не принял ключ"), e.getMessage());
+            }
+        });
+        test("оценка сцен: эмоции в репликах поднимают момент при ровном звуке", () -> {
+            double[] lv = new double[1200];
+            Arrays.fill(lv, -30);
+            List<Subs.Line> cues = new ArrayList<>();
+            for (int t = 5; t < 1190; t += 6) {
+                boolean hot = t >= 600 && t < 625;
+                Subs.Line ln = new Subs.Line();
+                ln.s = t;
+                ln.e = t + 4;
+                ln.text = hot ? (t % 12 == 0 ? "Что?! Нет!!!" : "ХА-ХА! СТОЙ!") : "Мы поедем завтра утром на работу";
+                cues.add(ln);
+            }
+            JSONArray c = Moments.find(lv, 30, cues, 4);
+            JSONObject top = c.getJSONObject(0);
+            check(top.getDouble("start") >= 575 && top.getDouble("start") <= 625 && top.getJSONArray("reasons").toString().contains("эмоции"), top.toString());
+            double[] cuts = new double[1200];
+            for (int i = 0; i < 1200; i += 4) cuts[i] = 1;
+            for (int i = 200; i < 230; i++) cuts[i] = 2; // быстрый монтаж
+            JSONArray c2 = Moments.find(lv, 30, null, cuts, 3);
+            check(c2.getJSONObject(0).getJSONArray("reasons").toString().contains("быстрый монтаж")
+                    && Math.abs(c2.getJSONObject(0).getDouble("start") - 200) <= 30, c2.toString());
+        });
+        test("автоплан: 3 лучших серии по TMDB на 3 дня, клипы в очередь; фильм — 3 момента подальше", () -> {
+            Store store = new Store(Files.createTempDirectory("plan").toFile());
+            store.saveSettings(new JSONObject().put("tmdb_key", "k123"));
+            store.upsertSource(new JSONObject().put("id", "bb").put("type", "series").put("title", "Во все тяжкие"));
+            store.upsertSource(new JSONObject().put("id", "mx").put("type", "movie").put("title", "Матрица"));
+            JSONObject st = store.loadState();
+            st.getJSONObject("used_files").put("bb", new JSONArray().put("bb/Breaking.Bad.S02E01.mkv"));
+            store.saveState(st);
+            Tmdb tm = new Tmdb(store, tmdbNet);
+            Platform pf = new FakePlatform(new byte[10]) {
+                public JSONArray listFiles(JSONObject src) {
+                    JSONArray a = new JSONArray();
+                    try {
+                        String[] names = src.optString("id").equals("bb")
+                                ? new String[]{"Breaking.Bad.S01E01.mkv", "Breaking.Bad.S01E02.mkv", "Breaking.Bad.S01E03.mkv", "Breaking.Bad.S02E01.mkv"}
+                                : new String[]{"Matrix.1999.mkv"};
+                        for (String n : names) a.put(new JSONObject().put("name", n).put("path", src.optString("id") + "/" + n).put("mtime", 1));
+                    } catch (Exception e) { throw new RuntimeException(e); }
+                    return a;
+                }
+                public JSONObject probe(String id) {
+                    try { return new JSONObject().put("has_srt", id.contains("S01E03")); } catch (Exception e) { throw new RuntimeException(e); }
+                }
+            };
+            final List<String> analyzed = new ArrayList<>();
+            Planner.Analyzer an = (ctx, file, len, lo, hi) -> {
+                analyzed.add(file);
+                JSONArray c = new JSONArray();
+                for (double s0 : new double[]{100, 110, 400, 900}) c.put(new JSONObject().put("start", s0).put("end", s0 + len).put("score", 0.5).put("reasons", new JSONArray().put("громко")));
+                return new JSONObject().put("candidates", c);
+            };
+            File cf = File.createTempFile("clips", ".json");
+            cf.delete();
+            Map<String, JobQueue.Handler> ch = new HashMap<>();
+            ch.put("clip", ctx -> new JSONObject());
+            JobQueue clips = new JobQueue(cf, ch); // не запущена: только принимает задачи
+            File pfj = File.createTempFile("pjobs", ".json");
+            pfj.delete();
+            Map<String, JobQueue.Handler> h = new HashMap<>();
+            h.put("plan", ctx -> Planner.run(ctx, store, pf, tm, an, clips, D0));
+            JobQueue q = new JobQueue(pfj, h);
+            JSONObject j1 = q.submit("plan", new JSONObject().put("source_id", "bb").put("count", 3), "план");
+            q.start();
+            check(q.waitIdle(5000), "план не выполнился");
+            JSONObject done = q.get(j1.getString("id"));
+            check(done.getString("status").equals("done"), done.toString());
+            JSONArray items = Planner.load(store);
+            check(items.length() == 3, "пунктов " + items.length());
+            String[] want = {"bb/Breaking.Bad.S01E02.mkv", "bb/Breaking.Bad.S01E03.mkv", "bb/Breaking.Bad.S01E01.mkv"};
+            for (int i = 0; i < 3; i++) {
+                JSONObject it = items.getJSONObject(i);
+                check(it.getString("date").equals(D0.plusDays(i).toString()), "дата " + it.getString("date"));
+                check(it.getString("file").equals(want[i]), i + ": " + it.getString("file"));
+                check(it.getDouble("start") == 100 && it.getDouble("end") == 130, "лучший момент серии");
+                JSONObject cj = clips.get(it.getString("job_id"));
+                check(cj != null && cj.getString("type").equals("clip"), "клип в очереди");
+            }
+            check(items.getJSONObject(0).getString("why").contains("рейтинг 9,0"), items.getJSONObject(0).getString("why"));
+            check(clips.get(items.getJSONObject(1).getString("job_id")).getJSONObject("params").getString("sub_source").equals("srt"), "субтитры из .srt");
+            // фильм: 3 момента одного файла, далеко друг от друга
+            q.submit("plan", new JSONObject().put("source_id", "mx").put("count", 3).put("start", D0.plusDays(3).toString()).put("make_clips", false), "фильм");
+            check(q.waitIdle(5000), "фильм");
+            JSONArray all = Planner.load(store);
+            List<Double> starts = new ArrayList<>();
+            for (int i = 0; i < all.length(); i++) if (all.getJSONObject(i).getString("source_id").equals("mx")) {
+                starts.add(all.getJSONObject(i).getDouble("start"));
+                check(!all.getJSONObject(i).has("job_id"), "без клипов");
+            }
+            check(starts.equals(Arrays.asList(100.0, 400.0, 900.0)), "моменты фильма: " + starts);
+            // повторный план того же источника заменяет неопубликованные пункты, а не добавляет
+            q.submit("plan", new JSONObject().put("source_id", "bb").put("count", 3).put("make_clips", false), "ещё раз");
+            check(q.waitIdle(5000), "повтор");
+            int bb = 0;
+            for (int i = 0; i < Planner.load(store).length(); i++) if (Planner.load(store).getJSONObject(i).getString("source_id").equals("bb")) bb++;
+            check(bb == 3, "дубли в плане: " + bb);
+            q.stop();
+        });
+
         // ---------------------------------------------------------------- моменты по чату записи
         test("чат: TwitchDownloader JSON — всплески находятся, обычный темп не мешает", () -> {
             StringBuilder j = new StringBuilder("{\"streamer\":{\"name\":\"vasya\"},\"video\":{\"title\":\"Эфир\"},\"comments\":[");

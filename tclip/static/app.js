@@ -81,6 +81,7 @@ function parseHash() {
 }
 async function route() {
   S.timers.forEach(clearInterval); S.timers = [];
+  S.seq = (S.seq || 0) + 1;
   const r = parseHash();
   const fn = routes[r.name] || viewToday;
   const tab = { cam: "clip", clipview: "clips", source: "settings" }[r.name] || r.name;
@@ -101,13 +102,34 @@ async function refreshBadge() {
 setInterval(refreshBadge, 4000);
 
 // ------------------------------------------------------------------ «Сегодня»
+/** Экран сменился, пока грузились данные (ответ пришёл поздно) — рисовать уже нельзя. */
+function staleSince(seq) { return seq !== S.seq; }
+
 async function viewToday() {
+  const seq = S.seq;
   await loadCfg(true);
   const d = await api("/api/today");
+  if (staleSince(seq)) return;
+  const planCard = (d.plan_today || []).length || (d.plan_next || []).length ? `<div class="card hl stack"><h2>По плану на сегодня</h2>
+    ${(d.plan_today || []).length ? d.plan_today.map((it, i) => planItemHtml(it, i, false) + (it.clip_status === "done"
+      ? `<button class="btn ok" data-ppub="${i}">Опубликовано</button>` : "")).join("") : `<p class="muted">На сегодня в плане ничего нет.</p>`}
+    ${(d.plan_next || []).length ? `<p class="muted small">Дальше: ${d.plan_next.map((x) => `${fmtDate(x.date)} — ${esc(x.source_title)}`).join("; ")}</p>` : ""}
+    <a class="btn ghost sm" href="#/discover/kino">Весь план</a></div>` : "";
+  const bindToday = () => {
+    bindPlan(d.plan_today || [], () => route());
+    $$("[data-ppub]").forEach((b) => (b.onclick = async () => {
+      const r = await api(`/api/plan/${d.plan_today[+b.dataset.ppub].id}/published`, { method: "POST" }); toast(r.message); route();
+    }));
+    if ((d.plan_today || []).some((x) => x.clip_status === "running" || x.clip_status === "queued")) every(async () => {
+      const t = await api("/api/today").catch(() => null);
+      if (t && !(t.plan_today || []).some((x) => x.clip_status === "running" || x.clip_status === "queued") && parseHash().name === "today") route();
+    }, 5000);
+  };
   if (d.empty) {
-    app.innerHTML = `<h1>Сегодня</h1><div class="card stack"><h2>Источников пока нет</h2>
+    app.innerHTML = `<h1>Сегодня</h1>${planCard}<div class="card stack"><h2>Источников пока нет</h2>
       <p class="muted">Добавьте сериал, фильм, стрим или блогера — и здесь появится план публикаций.</p>
       <a class="btn primary" href="#/source/new">Добавить источник</a></div>`;
+    bindToday();
     return;
   }
   const c = d.current;
@@ -118,7 +140,7 @@ async function viewToday() {
     : d.folder ? `<p class="warn">В папке «${esc(d.folder)}» пока нет видео. Положите туда файлы.</p>`
       : `<p class="warn">Для этого источника не выбрана папка с видео.</p>
          <a class="btn" href="#/source/${encodeURIComponent(c.source_id)}">Выбрать папку</a>`;
-  app.innerHTML = `<h1>Сегодня</h1>
+  app.innerHTML = `<h1>Сегодня</h1>${planCard}
   <div class="card hl stack" id="curCard">
     <div class="row"><span class="badge ${c.type}">${esc(c.type_name)}</span>
       <span class="grow"></span><span class="${d.overdue ? "due-over" : d.is_due ? "due-ok" : "muted"}">${esc(d.due_status)}</span></div>
@@ -138,6 +160,7 @@ async function viewToday() {
   </ul></div>
   ${d.history.length ? `<button class="btn ghost sm" id="bUndo">Отменить последнее действие</button>` : ""}`;
 
+  bindToday();
   $("#bPub").onclick = async () => {
     const msg = d.clip ? `Отметить, что клип «${d.clip.filename}» опубликован?` : "Отметить пост как опубликованный?";
     if (!confirm(msg)) return;
@@ -168,8 +191,10 @@ async function viewToday() {
 
 // ------------------------------------------------------------------ «Клип»: выбор файла и момента
 async function viewClip(_arg, q) {
+  const seq = S.seq;
   await loadCfg();
   const st = await loadStatus();
+  if (staleSince(seq)) return;
   const dr = S.draft;
   if (q.get("source") !== null) { dr.source_id = q.get("source"); if (!q.get("file")) dr.file = null; }
   if (q.get("file")) dr.file = q.get("file");
@@ -398,7 +423,9 @@ async function viewClip(_arg, q) {
 
 // ------------------------------------------------------------------ «Рамка вебкамеры»
 async function viewCam(sid, q) {
+  const seq = S.seq;
   await loadCfg(true);
+  if (staleSince(seq)) return;
   const src = S.cfg.sources.find((s) => s.id === sid);
   if (!src) { app.innerHTML = `<h1>Рамка вебкамеры</h1><p class="err">Источник не найден.</p>`; return; }
   let file = q.get("file") || (S.draft.source_id === sid ? S.draft.file : null);
@@ -555,7 +582,9 @@ async function viewQueue() {
 
 // ------------------------------------------------------------------ «Клипы»
 async function viewClips() {
+  const seq = S.seq;
   const clips = await api("/api/clips");
+  if (staleSince(seq)) return;
   app.innerHTML = `<h1>Клипы</h1>${clips.length ? `<div class="card"><ul class="list">${clips.map((c) => `<li><a class="item" href="#/clipview/${c.id}">
     <span class="t"><b>${esc(c.source_title)}</b> ${c.published ? '<span class="badge" style="background:#1d5a33">опубликован</span>' : ""}<br>
     <span class="muted small wrap">${esc(c.filename)} · ${fmt(c.start, false)}–${fmt(c.end, false)}${c.exists ? "" : " · файл удалён"}</span></span><span class="chev">›</span></a></li>`).join("")}</ul></div>`
@@ -564,8 +593,10 @@ async function viewClips() {
 
 // ------------------------------------------------------------------ «Готовый клип»
 async function viewClipView(id) {
+  const seq = S.seq;
   await loadCfg();
   const m = await api("/api/clips/" + encodeURIComponent(id));
+  if (staleSince(seq)) return;
   let lines = (m.lines || []).map((l) => ({ s: l.s, e: l.e, text: l.text }));
   const styles = Object.entries(S.cfg.sub_styles);
   const galleryName = m.gallery_path.split("/").slice(-3).join("/");
@@ -670,8 +701,10 @@ async function viewClipView(id) {
 
 // ------------------------------------------------------------------ «Настройки»
 async function viewSettings() {
+  const seq = S.seq;
   await loadCfg(true);
   const st = await loadStatus(true);
+  if (staleSince(seq)) return;
   const sc = S.cfg.schedule, se = S.cfg.settings;
   let order = [...sc.type_order];
   const asr = st.asr;
@@ -767,7 +800,7 @@ async function viewSettings() {
   const out = $("#bOut"); if (out) out.onclick = async () => { await fetch("/logout", { method: "POST" }); location.href = "/login"; };
 }
 
-const KEY_FIELDS = [["kTwId", "twitch_client_id"], ["kTwSec", "twitch_client_secret"], ["kYt", "youtube_api_key"]];
+const KEY_FIELDS = [["kTwId", "twitch_client_id"], ["kTwSec", "twitch_client_secret"], ["kYt", "youtube_api_key"], ["kTm", "tmdb_key"]];
 function keysCard(se) {
   const f = (id, k, label) => `<label class="f" for="${id}">${label}</label>
     <input id="${id}" autocomplete="off" autocapitalize="off" spellcheck="false"
@@ -779,22 +812,28 @@ function keysCard(se) {
     <p class="muted small"><a href="https://dev.twitch.tv/console/apps" target="_blank" rel="noopener">dev.twitch.tv/console/apps</a></p>
     ${f("kYt", "youtube_api_key", "YouTube Data API: ключ")}
     <p class="muted small"><a href="https://console.cloud.google.com/apis/library/youtube.googleapis.com" target="_blank" rel="noopener">console.cloud.google.com</a></p>
+    ${f("kTm", "tmdb_key", "TMDB: ключ API или токен доступа")}
+    <p class="muted small"><a href="https://www.themoviedb.org/settings/api" target="_blank" rel="noopener">themoviedb.org/settings/api</a></p>
     <div style="height:12px"></div><button class="btn primary" id="bKeys">Сохранить ключи</button>
     <button class="btn ghost sm" id="bKeysDel">Стереть ключи</button></div>`;
 }
 
 // ------------------------------------------------------------------ «Моменты»: где зрители реагировали сильнее всего
-const DISC = [["twitch", "Twitch"], ["streams", "YouTube: стримы"], ["videos", "YouTube: каналы"]];
+const DISC = [["kino", "Фильмы и сериалы"], ["twitch", "Twitch"], ["streams", "YouTube: стримы"], ["videos", "YouTube: каналы"]];
 function fmtNum(n) { n = Number(n) || 0; return n >= 1e6 ? (n / 1e6).toFixed(1).replace(".0", "") + " млн" : n >= 1e3 ? (n / 1e3).toFixed(1).replace(".0", "") + " тыс." : String(n); }
+function fmtRating(r) { return (Number(r) || 0).toFixed(1).replace(".", ","); }
 function fmtDay(iso) { const d = new Date(iso); return isNaN(d) ? "" : `${d.getDate()} ${MON[d.getMonth()]}`; }
 
 async function viewDiscover(sec, q) {
-  sec = DISC.some(([k]) => k === sec) ? sec : (S.discSec || "twitch");
+  sec = DISC.some(([k]) => k === sec) ? sec : (S.discSec || "kino");
   S.discSec = sec;
+  const seq = S.seq;
   await loadCfg();
+  if (staleSince(seq)) return;
   app.innerHTML = `<h1>Моменты</h1>
-  <div class="seg seg3" id="dSeg">${DISC.map(([k, n]) => `<button data-s="${k}" class="${k === sec ? "on" : ""}">${n}</button>`).join("")}</div>
-  <p class="muted small" style="margin:10px 2px">${sec === "twitch" ? "Где зрители реагировали сильнее всего: всплески в чате записи и клипы зрителей."
+  <div class="seg seg4" id="dSeg">${DISC.map(([k, n]) => `<button data-s="${k}" class="${k === sec ? "on" : ""}">${n}</button>`).join("")}</div>
+  <p class="muted small" style="margin:10px 2px">${sec === "kino" ? "Автоплан моментов на несколько дней, лучшие серии по рейтингу TMDB, что популярно сейчас."
+    : sec === "twitch" ? "Где зрители реагировали сильнее всего: всплески в чате записи и клипы зрителей."
     : "Минуты, которые зрители чаще всего упоминают в комментариях (например, «12:34 ахах»)."}</p>
   <div id="dBox"><p class="muted pad">Загружаю…</p></div>
   <button class="btn ghost sm" id="dRef">Обновить</button>`;
@@ -804,6 +843,7 @@ async function viewDiscover(sec, q) {
   render(q && q.get("refresh") === "1");
 
   async function render(refresh) {
+    if (sec === "kino") return renderKino($("#dBox"), refresh);
     const box = $("#dBox");
     box.innerHTML = `<p class="muted pad">Загружаю…</p>`;
     let d, chats = null;
@@ -933,6 +973,122 @@ async function viewDiscover(sec, q) {
   }
 }
 
+// ------------------------------------------------------------------ «Фильмы и сериалы»: автоплан и TMDB
+const PLAN_ST = { queued: "клип в очереди", running: "клип собирается", done: "клип готов", error: "ошибка сборки", canceled: "сборка отменена", none: "клип не сделан" };
+function planItemHtml(it, i, full = true) {
+  const st = it.clip_status;
+  return `<div class="mom"><div class="row"><span class="tm">${fmtDate(it.date)}</span><span class="grow"></span>
+      <span class="small ${st === "done" ? "ok" : st === "error" ? "err" : "muted"}">${it.published ? "опубликовано" : PLAN_ST[st] || st}</span></div>
+    <b class="wrap">${esc(it.source_title)} · ${esc(it.file_name)}</b>
+    <span class="small">${fmt(it.start, false)}–${fmt(it.end, false)} · ${esc(it.how || "")}${(it.reasons || []).length ? " · " + esc(it.reasons.join(", ")) : ""}</span>
+    ${it.why ? `<span class="muted small wrap">${esc(it.why)}</span>` : ""}
+    ${st === "running" || st === "queued" ? bar(it.progress) : ""}
+    ${st === "error" && it.error ? `<span class="err small">${esc(it.error)}</span>` : ""}
+    <div class="row">${st === "done" ? `<a class="btn sm primary" href="#/clipview/${encodeURIComponent(it.clip_id)}">Открыть клип</a>`
+      : st === "queued" || st === "running" ? "" : `<button class="btn sm" data-pclip="${i}">Сделать клип</button>`}
+      <button class="btn sm ghost" data-pmom="${i}">Момент</button>
+      ${full ? `<button class="btn sm ghost" data-pdel="${i}" aria-label="Убрать из плана">Убрать</button>` : ""}</div></div>`;
+}
+function bindPlan(items, after) {
+  $$("[data-pclip]").forEach((b) => (b.onclick = async () => {
+    b.disabled = true; await api(`/api/plan/${items[+b.dataset.pclip].id}/clip`, { method: "POST" }); toast("Клип добавлен в очередь"); refreshBadge(); after();
+  }));
+  $$("[data-pmom]").forEach((b) => (b.onclick = () => {
+    const it = items[+b.dataset.pmom];
+    Object.assign(S.draft, { source_id: it.source_id, file: it.file }); saveDraft();
+    go(`#/clip?source=${encodeURIComponent(it.source_id)}&file=${encodeURIComponent(it.file)}&start=${it.start}&end=${it.end}`);
+  }));
+  $$("[data-pdel]").forEach((b) => (b.onclick = async () => {
+    if (!confirm("Убрать момент из плана? Готовый клип останется в «Клипах».")) return;
+    await api(`/api/plan/${items[+b.dataset.pdel].id}`, { method: "DELETE" }); after();
+  }));
+}
+
+async function renderKino(box, refresh) {
+  box.innerHTML = `<p class="muted pad">Загружаю…</p>`;
+  const [plan, lists] = await Promise.all([api("/api/plan"), api("/api/tmdb/lists" + (refresh ? "?refresh=1" : "")).catch((e) => ({ error: e.message }))]);
+  if (parseHash().name !== "discover" || S.discSec !== "kino") return;
+  const srcs = S.cfg.sources.filter((x) => x.enabled !== false);
+  const today = new Date(), p2 = (n) => String(n).padStart(2, "0");
+  const iso = `${today.getFullYear()}-${p2(today.getMonth() + 1)}-${p2(today.getDate())}`;
+  const items = plan.items.filter((x) => !x.published);
+  const kinoSrcs = srcs.filter((x) => x.type === "series" || x.type === "movie");
+  box.innerHTML = `<div class="card stack"><h2>Автоплан</h2>
+      <p class="muted small">Приложение само выберет моменты и разложит по дням — один в день.
+        Сериал: лучшие по рейтингу серии (TMDB), фильм: лучшие сцены, стрим: всплески чата или звука. Оценка — офлайн.</p>
+      ${srcs.length ? `<label class="f" for="plSrc">Источник</label><select id="plSrc">${srcs.map((x) => `<option value="${esc(x.id)}">${esc(x.title)} (${esc(typeName(x.type))})</option>`).join("")}</select>
+      <div class="grid2"><div><label class="f" for="plN">Сколько дней</label><input type="number" id="plN" min="1" max="7" value="3"></div>
+        <div><label class="f" for="plD">С какого дня</label><input type="date" id="plD" value="${iso}"></div></div>
+      <label class="toggle"><span>Сразу сделать клипы</span><input type="checkbox" id="plClips" checked></label>
+      <button class="btn primary" id="plGo">Составить план</button><div id="plProg"></div>`
+      : `<p class="warn">Сначала добавьте источник в «Настройках».</p>`}</div>
+    <div class="card"><h2>План</h2>${items.length ? items.map((it, i) => planItemHtml(it, i)).join("") + `<div style="height:10px"></div><button class="btn ghost sm" id="plClear">Очистить план</button>`
+      : `<p class="muted">Пока пусто. Составьте план выше.</p>`}</div>
+    ${lists.error ? `<div class="card"><p class="err">${esc(lists.error)}</p></div>`
+      : !lists.configured ? `<div class="card stack"><h2>Рейтинги TMDB</h2>
+        <p>С ключом TMDB автоплан берёт серии с самым высоким рейтингом, а здесь видно, что популярно сейчас.
+          Ключ бесплатный: themoviedb.org → «Настройки» → «API» (пошагово — в инструкции, раздел «Моменты»).</p>
+        <a class="btn" href="#/settings">Ввести ключ в «Настройках»</a></div>`
+      : `${kinoSrcs.map((x) => `<div class="card" data-tsrc="${esc(x.id)}"><h2>${esc(x.title)}</h2><p class="muted small">Ищу в TMDB…</p></div>`).join("")}
+        ${[["trending", "В тренде за неделю"], ["top_tv", "Лучшие сериалы"], ["top_movies", "Лучшие фильмы"]].map(([k, n]) => `<details class="card"><summary><b>${n}</b></summary>
+          <ul class="list">${(lists[k] || []).map((t) => `<li><div class="item"><span class="t"><b>${esc(t.title)}</b>${t.year ? ` (${esc(t.year)})` : ""}
+            <br><span class="small muted">${t.type === "tv" ? "сериал" : "фильм"} · ★ ${fmtRating(t.rating)}</span>
+            ${t.source_id ? ` <span class="ok small">· есть у вас</span>` : ""}</span></div></li>`).join("")}</ul></details>`).join("")}`}`;
+  bindPlan(items, () => renderKino(box, false));
+  const cl = $("#plClear"); if (cl) cl.onclick = async () => { if (!confirm("Очистить весь план? Готовые клипы останутся.")) return; await api("/api/plan/clear", { method: "POST" }); renderKino(box, false); };
+  const go2 = $("#plGo");
+  if (go2) go2.onclick = async () => {
+    go2.disabled = true;
+    const params = { source_id: $("#plSrc").value, count: Math.max(1, Math.min(7, +$("#plN").value || 3)), start: $("#plD").value, make_clips: $("#plClips").checked };
+    const job = await api("/api/jobs", { method: "POST", body: { type: "plan", params } }).catch(() => null);
+    if (!job) { go2.disabled = false; return; }
+    const fin = await pollJob(job.id, (j) => { const el = $("#plProg"); if (el) el.innerHTML = bar(j.progress) + `<p class="muted small">${esc(j.stage)}</p>`; });
+    if (parseHash().name !== "discover") return;
+    if (fin.status !== "done") { go2.disabled = false; $("#plProg").innerHTML = `<p class="err">${esc(fin.error || "Не получилось")}</p>`; return; }
+    toast(`План готов: ${fin.result.items.length} дн.${params.make_clips ? ", клипы собираются" : ""}`); refreshBadge();
+    if ((fin.warnings || []).length) toast(fin.warnings[0], true);
+    renderKino(box, false);
+  };
+  if (lists.configured) for (const x of kinoSrcs) tmdbSource(x.id, refresh);
+}
+
+async function tmdbSource(id, refresh) {
+  const card = $(`[data-tsrc="${CSS.escape(id)}"]`);
+  if (!card) return;
+  let d;
+  try { d = await api(`/api/tmdb/source/${encodeURIComponent(id)}` + (refresh ? "?refresh=1" : "")); }
+  catch (e) { card.innerHTML += `<p class="err small">${esc(e.message)}</p>`; return; }
+  if (!card.isConnected) return;
+  const head = `<h2>${esc(d.title)}</h2>`;
+  if (!d.match) {
+    card.innerHTML = head + `<p class="small">Какое это название в TMDB?</p>${(d.candidates || []).length ? `<ul class="list">${d.candidates.map((c, i) => `<li><button class="item" data-tl="${i}">
+      <span class="t"><b>${esc(c.title)}</b>${c.year ? ` (${esc(c.year)})` : ""}<br><span class="muted small">${c.type === "tv" ? "сериал" : "фильм"} · ★ ${fmtRating(c.rating)}</span></span><span class="chev">›</span></button></li>`).join("")}</ul>`
+      : `<p class="muted small">Ничего не нашлось — проверьте название источника.</p>`}`;
+    $$("[data-tl]", card).forEach((b) => (b.onclick = async () => {
+      const c = d.candidates[+b.dataset.tl];
+      await api("/api/tmdb/link", { method: "POST", body: { source_id: id, tmdb_id: c.id, tmdb_type: c.type } }); tmdbSource(id, false);
+    }));
+    return;
+  }
+  const m = d.match;
+  const eps = (d.episodes || []).filter((e) => e.file).slice(0, 6);
+  card.innerHTML = head + `<p class="small">${esc(m.title)}${m.year ? ` (${esc(m.year)})` : ""} · ★ ${fmtRating(m.rating)} <a href="#" data-tun="1" class="muted">не то</a></p>
+    ${m.type === "tv" ? (eps.length ? `<p class="muted small">Лучшие серии из вашей папки:</p>${eps.map((e, i) => `<div class="mom"><div class="row">
+        <span class="tm">S${String(e.season).padStart(2, "0")}E${String(e.episode).padStart(2, "0")}</span><span class="grow"></span>
+        <span class="small">★ ${fmtRating(e.rating)} <span class="muted">(${e.votes})</span></span></div>
+        <span class="small wrap">«${esc(e.name)}»${e.used ? ' <span class="muted">· уже была</span>' : ""}</span>
+        <button class="btn sm primary" data-tep="${i}">Найти моменты</button></div>`).join("")}`
+      : `<p class="muted small">Не нашёл в папке файлов с номером серии в имени (S01E05, 1x05, «2 сезон 3 серия»).</p>`) : ""}`;
+  $("[data-tun]", card).onclick = async (ev) => {
+    ev.preventDefault(); await api("/api/tmdb/link", { method: "POST", body: { source_id: id, tmdb_id: 0 } }); tmdbSource(id, false);
+  };
+  $$("[data-tep]", card).forEach((b) => (b.onclick = () => {
+    const e = eps[+b.dataset.tep];
+    Object.assign(S.draft, { source_id: id, file: e.file }); saveDraft();
+    go(`#/clip?source=${encodeURIComponent(id)}&file=${encodeURIComponent(e.file)}&auto=mom`);
+  }));
+}
+
 /** Какой файл из папки источника — эта запись? Даты в имени файла подсказывают ответ. */
 function pickFileFor(sourceId, item) {
   return new Promise(async (resolve) => {
@@ -989,7 +1145,9 @@ function appAsrCard(st, se) {
 
 // ------------------------------------------------------------------ «Источник»
 async function viewSource(id) {
+  const seq = S.seq;
   await loadCfg(true);
+  if (staleSince(seq)) return;
   const isNew = id === "new" || !id;
   const s = isNew ? { type: "series", title: "", folder: "", enabled: true, profile: {} } : S.cfg.sources.find((x) => x.id === id);
   if (!s) { app.innerHTML = `<h1>Источник</h1><p class="err">Источник не найден.</p>`; return; }

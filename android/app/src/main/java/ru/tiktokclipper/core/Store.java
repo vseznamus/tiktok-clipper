@@ -296,6 +296,25 @@ public class Store {
         }
     }
 
+    /** Служебные поля источника (привязка к TMDB) без пересохранения всего источника. */
+    public void updateSourceFields(String id, JSONObject patch) throws JSONException {
+        synchronized (LOCK) {
+            JSONObject cfg = sources();
+            JSONArray arr = cfg.optJSONArray("sources");
+            for (int i = 0; arr != null && i < arr.length(); i++) {
+                JSONObject s = arr.getJSONObject(i);
+                if (!id.equals(s.optString("id"))) continue;
+                for (Iterator<String> it = patch.keys(); it.hasNext(); ) {
+                    String k = it.next();
+                    if (patch.isNull(k)) s.remove(k);
+                    else s.put(k, patch.get(k));
+                }
+                saveSources(cfg);
+                return;
+            }
+        }
+    }
+
     public JSONObject updateProfile(String id, JSONObject patch) throws ApiError {
         synchronized (LOCK) {
             JSONObject cfg = sources();

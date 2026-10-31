@@ -26,8 +26,11 @@ public class DesktopServer {
         h.put("clip", ctx -> pf.clip(ctx, api[0]));
         h.put("rebuild", ctx -> pf.rebuild(ctx, api[0]));
         h.put("moments", pf::moments);
+        JobQueue[] qa = new JobQueue[1];
+        h.put("plan", ctx -> Planner.run(ctx, store, pf, api[0].tmdb, pf::analyze, qa[0], java.time.LocalDate.now()));
         h.put("model", pf::model);
         JobQueue q = new JobQueue(store.jobsFile(), h);
+        qa[0] = q;
         api[0] = new Api(store, pf, q, TOKEN, DesktopServer::fakeNet);
         q.start();
         MiniHttp http = new MiniHttp(api[0]);
@@ -53,7 +56,16 @@ public class DesktopServer {
                 + "\"liveStreamingDetails\":{\"actualStartTime\":\"2026-10-28T19:00:00Z\",\"actualEndTime\":\"2026-10-28T21:05:00Z\"}},"
                 + "{\"id\":\"vid00000002\",\"snippet\":{\"title\":\"Обзор новой игры\",\"publishedAt\":\"2026-10-27T12:00:00Z\"},"
                 + "\"contentDetails\":{\"duration\":\"PT18M40S\"},\"statistics\":{\"viewCount\":\"120000\",\"commentCount\":\"950\"}}]}";
-        else if (url.contains("/commentThreads")) {
+        else if (url.contains("api.themoviedb.org")) {
+            if (url.contains("/trending/")) j = "{\"results\":[{\"id\":1396,\"media_type\":\"tv\",\"name\":\"Во все тяжкие\",\"original_name\":\"Breaking Bad\",\"first_air_date\":\"2008-01-20\",\"vote_average\":8.9,\"vote_count\":15000},"
+                    + "{\"id\":603,\"media_type\":\"movie\",\"title\":\"Матрица\",\"release_date\":\"1999-03-31\",\"vote_average\":8.2,\"vote_count\":26000}]}";
+            else if (url.contains("/top_rated")) j = "{\"results\":[{\"id\":1396,\"name\":\"Во все тяжкие\",\"title\":\"Во все тяжкие\",\"vote_average\":8.9}]}";
+            else if (url.contains("/search/")) j = "{\"results\":[{\"id\":1396,\"media_type\":\"tv\",\"name\":\"Во все тяжкие\",\"original_name\":\"Breaking Bad\",\"vote_average\":8.9}]}";
+            else if (url.contains("/tv/1396/season/1")) j = "{\"episodes\":[{\"episode_number\":1,\"name\":\"Пилот\",\"vote_average\":7.5,\"vote_count\":50},"
+                    + "{\"episode_number\":2,\"name\":\"Кот в мешке\",\"vote_average\":9.0,\"vote_count\":50},{\"episode_number\":3,\"name\":\"…и мешок в реке\",\"vote_average\":8.0,\"vote_count\":50}]}";
+            else if (url.contains("/tv/1396")) j = "{\"name\":\"Во все тяжкие\",\"first_air_date\":\"2008-01-20\",\"vote_average\":8.9,\"vote_count\":15000,\"seasons\":[{\"season_number\":1}]}";
+            else return new Discover.Resp(404, "{}");
+        } else if (url.contains("/commentThreads")) {
             String[][] cs = {{"0:15 я упал со стула 😂", "240"}, {"0:17 ахахах", "31"}, {"1:02:03 вот это поворот", "12"}, {"лучший стрим", "5"}};
             StringBuilder b = new StringBuilder("{\"items\":[");
             for (int i = 0; i < cs.length; i++) {
@@ -263,6 +275,11 @@ public class DesktopServer {
         }
 
         JSONObject moments(JobQueue.Ctx ctx) throws Exception {
+            return analyze(ctx, ctx.params.getString("file"), ctx.params.optInt("length", 10), 0, 1);
+        }
+
+        JSONObject analyze(JobQueue.Ctx ctx, String fileId, int length, double lo, double hi) throws Exception {
+            ctx.params.put("file", fileId).put("length", length);
             File f = resolve(ctx.params.getString("file"));
             File chatF = chatFile(f);
             if (chatF != null) {

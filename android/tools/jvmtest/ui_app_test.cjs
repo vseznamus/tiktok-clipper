@@ -49,7 +49,7 @@ async function check(page, name, full = false) {
     await ctx.addInitScript(({ streamerDir }) => {
       window.__calls = [];
       window.AndroidApp = {
-        pickFolder: () => { window.__calls.push("pickFolder"); setTimeout(() => window.onFolderPicked({ uri: streamerDir, name: "streamer" }), 50); },
+        pickFolder: () => { window.__calls.push("pickFolder"); setTimeout(() => window.onFolderPicked(window.__folder || { uri: streamerDir, name: "streamer" }), 50); },
         pickVideo: () => { window.__calls.push("pickVideo"); setTimeout(() => window.onVideoPicked("_picked/old_rip.mp4"), 50); },
         shareClip: (id) => window.__calls.push("share:" + id),
         openClip: (id) => window.__calls.push("open:" + id),
@@ -148,6 +148,8 @@ async function check(page, name, full = false) {
     for (let i = 0; i < 25; i++) comments.push({ content_offset_seconds: 25 + i * 0.1, commenter: { display_name: "z" + i }, message: { body: "KEKW ахаха" } });
     fs.writeFileSync(path.join(demo, "media/streamer/stream_2026-10-28.json"), JSON.stringify({ video: { title: "Эфир" }, comments }));
     await page.click('#nav a[data-tab="discover"]');
+    await page.waitForSelector("#dSeg");
+    await page.click('#dSeg button[data-s="twitch"]');
     await page.waitForSelector("text=Моменты по чату записи");
     await page.waitForSelector("[data-chat]");
     await check(page, "a11_momenty_chat", true);
@@ -165,6 +167,7 @@ async function check(page, name, full = false) {
     await page.fill("#kTwId", "abc123clientid");
     await page.fill("#kTwSec", "secretsecret999");
     await page.fill("#kYt", "AIzaFakeKey0000");
+    await page.fill("#kTm", "tmdbFakeKey42");
     await page.click("#bKeys");
     await page.waitForFunction(() => (document.querySelector("#kTwSec") || {}).placeholder?.includes("…t999"));
     if ((await page.content()).includes("secretsecret999")) fail("ключ показан целиком");
@@ -210,6 +213,40 @@ async function check(page, name, full = false) {
     await page.waitForSelector("text=· из списка");
     step("«Слежу без источника»: канал из списка показан, неверный ID отклонён");
     step("YouTube: стримы — моменты по таймкодам в комментариях; «каналы» — обычные видео");
+
+    // «Фильмы и сериалы»: сериал из папки → рейтинг серий TMDB → автоплан на 3 дня → план на «Сегодня»
+    await page.goto(BASE + "/#/source/new");
+    await page.waitForSelector("#bFolder");
+    await page.fill("#sT", "Во все тяжкие");
+    await page.click('#tSeg button[data-t="series"]');
+    await page.evaluate((dir) => { window.__folder = { uri: dir, name: "breaking_bad" }; }, path.join(demo, "media/breaking_bad"));
+    await page.click("#bFolder");
+    await page.waitForFunction(() => document.querySelector("#sFname").textContent === "breaking_bad");
+    await page.click("#bSave");
+    await page.waitForSelector("h1:has-text('Настройки')");
+    await page.click('#nav a[data-tab="discover"]');
+    await page.click('#dSeg button[data-s="kino"]');
+    await page.waitForSelector("[data-tep]");
+    const tm = await page.$eval("#dBox", (e) => e.textContent); // списки TMDB свёрнуты — innerText их не видит
+    if (!tm.includes("S01E02") || tm.indexOf("S01E02") > tm.indexOf("S01E03") || !tm.includes("есть у вас")) fail("рейтинг серий TMDB: " + tm.slice(0, 400));
+    await check(page, "a15_filmy_serialy", true);
+    step("TMDB: сериал привязан сам, лучшие серии из папки по рейтингу (S01E02 ★9,0 первой), в тренде отмечено «есть у вас»");
+    await page.selectOption("#plSrc", { label: "Во все тяжкие (Сериал)" });
+    await page.click("#plGo");
+    await page.waitForFunction(() => { const t = document.querySelector("#toast"); return !t.hidden && t.innerText.includes("План готов"); }, null, { timeout: 120000 });
+    await page.waitForFunction(() => document.querySelectorAll("[data-pdel]").length === 3);
+    const pl = await page.innerText("#dBox");
+    const i2 = pl.indexOf("S01E02.mp4"), i3 = pl.indexOf("S01E03.mp4"), i1 = pl.indexOf("S01E01.mp4");
+    if (!(i2 >= 0 && i2 < i3 && i3 < i1) || !pl.includes("рейтинг 9,0")) fail("порядок плана: " + pl.slice(0, 600));
+    await check(page, "a16_avtoplan", true);
+    step("автоплан: 3 серии по рейтингу (E02 → E03 → E01) на 3 дня, клипы поставлены в очередь");
+    await page.click('#nav a[data-tab="today"]');
+    await page.waitForSelector("text=По плану на сегодня");
+    await page.waitForSelector("[data-ppub]", { timeout: 180000 });
+    await check(page, "a17_segodnya_plan", true);
+    await page.click("[data-ppub]");
+    await page.waitForFunction(() => { const t = document.querySelector("#toast"); return !t.hidden && t.innerText.includes("опубликовано"); }, null, { timeout: 15000 });
+    step("«Сегодня»: момент по плану, клип собран → «Опубликовано»");
 
     // отдельное видео через системное окно
     await page.goto(BASE + "/#/clip");

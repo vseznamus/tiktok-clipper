@@ -5,6 +5,7 @@ import android.media.MediaMetadataRetriever;
 import android.net.Uri;
 
 import org.json.JSONArray;
+import org.json.JSONException;
 import org.json.JSONObject;
 
 import java.io.File;
@@ -23,6 +24,7 @@ import ru.tiktokclipper.core.ChatMoments;
 import ru.tiktokclipper.core.JobQueue;
 import ru.tiktokclipper.core.Moments;
 import ru.tiktokclipper.core.Mp4FastStart;
+import ru.tiktokclipper.core.Planner;
 import ru.tiktokclipper.core.Store;
 import ru.tiktokclipper.core.Subs;
 
@@ -273,21 +275,34 @@ final class ClipJobs {
 
     JSONObject moments(JobQueue.Ctx ctx) throws Exception {
         JSONObject p = ctx.params;
-        String file = p.getString("file");
+        int length = p.optInt("length", e.store.settings().optInt("moment_len", 30));
+        return analyze(ctx, p.getString("file"), length, 0, 1);
+    }
+
+    /** Автоплан: N моментов на N дней (core/Planner). */
+    JSONObject plan(JobQueue.Ctx ctx) throws Exception {
+        return Planner.run(ctx, e.store, e.platform, api.tmdb, this::analyze, e.queue, java.time.LocalDate.now());
+    }
+
+    /**
+     * Моменты в файле: по чату записи, если он лежит рядом, иначе офлайн по звуку, репликам (.srt) и сменам планов.
+     * Прогресс задачи — в пределах lo…hi.
+     */
+    JSONObject analyze(JobQueue.Ctx ctx, String file, int length, double lo, double hi) throws Exception {
+        final double span = hi - lo;
         Uri uri = e.platform.resolve(file);
         JSONObject info = e.platform.probeUri(uri);
-        int length = p.optInt("length", e.store.settings().optInt("moment_len", 30));
         // рядом лежит чат записи — моменты по реакции зрителей
         Uri chatUri = e.platform.sidecarChat(file);
         if (chatUri != null) {
-            ctx.progress(0.1, "Читаю чат записи");
+            ctx.progress(lo + 0.1 * span, "Читаю чат записи");
             ChatMoments.Chat chat;
             try (java.io.InputStream in = e.ctx.getContentResolver().openInputStream(chatUri)) {
                 chat = ChatMoments.read(in);
             }
             ctx.check();
             if (chat.n > 0) {
-                ctx.progress(0.8, "Ищу всплески в чате (" + chat.n + " сообщений)");
+                ctx.progress(lo + 0.8 * span, "Ищу всплески в чате (" + chat.n + " сообщений)");
                 return new JSONObject().put("file", file).put("length", length).put("source", "chat").put("chat_messages", chat.n)
                         .put("candidates", ChatMoments.find(chat, info.optDouble("duration"), length, 8)).put("speech", true);
             }
@@ -295,23 +310,86 @@ final class ClipJobs {
         }
         if (!info.optBoolean("has_audio")) throw new ApiError(400, "В файле нет звука — искать громкие моменты не по чему");
         long size = e.platform.uriSource(uri).size();
-        File cache = new File(e.store.dir, "cache/" + sha1(file + "|" + size) + ".loud.json");
+        String key = sha1(file + "|" + size);
+        File cache = new File(e.store.dir, "cache/" + key + ".loud.json");
         double[] levels;
         if (cache.isFile()) {
-            JSONArray a = Store.readArray(cache);
-            levels = new double[a.length()];
-            for (int i = 0; i < a.length(); i++) levels[i] = a.getDouble(i);
+            levels = readDoubles(cache);
         } else {
             levels = AudioPipe.loudness(e.ctx, uri, info.optDouble("duration"), ctx.cancel,
-                    ctx.stage(0, 0.95, "Слушаю звук всего файла (первый раз долго, потом из кэша)"));
-            JSONArray a = new JSONArray();
-            for (double v : levels) a.put(Math.round(v * 100) / 100.0);
-            Store.writeJson(cache, a);
+                    ctx.stage(lo, lo + 0.85 * span, "Слушаю звук всего файла (первый раз долго, потом из кэша)"));
+            writeDoubles(cache, levels);
+        }
+        // смены планов: опорные кадры по секундам (кодировщик ставит их на склейках)
+        File cutCache = new File(e.store.dir, "cache/" + key + ".cuts.json");
+        double[] cuts = null;
+        try {
+            if (cutCache.isFile()) cuts = readDoubles(cutCache);
+            else {
+                ctx.progress(lo + 0.88 * span, "Смотрю смены планов");
+                cuts = keyframes(uri, info.optDouble("duration"), ctx.cancel);
+                writeDoubles(cutCache, cuts);
+            }
+        } catch (JobQueue.Cancelled c) {
+            throw c;
+        } catch (Exception ex) {
+            cuts = null; // не страшно — оценим без них
         }
         String srt = e.platform.sidecarSrt(file);
         List<Subs.Line> cues = srt != null ? Subs.parseSrt(srt) : null;
         return new JSONObject().put("file", file).put("length", length)
-                .put("candidates", Moments.find(levels, length, cues, 8)).put("speech", cues != null && !cues.isEmpty());
+                .put("candidates", Moments.find(levels, length, cues, cuts, 8)).put("speech", cues != null && !cues.isEmpty());
+    }
+
+    static double[] readDoubles(File f) throws JSONException {
+        JSONArray a = Store.readArray(f);
+        double[] v = new double[a.length()];
+        for (int i = 0; i < a.length(); i++) v[i] = a.getDouble(i);
+        return v;
+    }
+
+    static void writeDoubles(File f, double[] v) {
+        JSONArray a = new JSONArray();
+        for (double x : v) {
+            try {
+                a.put(Math.round(x * 100) / 100.0);
+            } catch (JSONException ignored) {
+            }
+        }
+        Store.writeJson(f, a);
+    }
+
+    /** Число опорных (ключевых) кадров в каждой секунде — без декодирования, только по меткам дорожки. */
+    double[] keyframes(Uri uri, double duration, java.util.concurrent.atomic.AtomicBoolean cancel) throws Exception {
+        android.media.MediaExtractor ex = new android.media.MediaExtractor();
+        try {
+            ex.setDataSource(e.ctx, uri, null);
+            int track = -1;
+            for (int i = 0; i < ex.getTrackCount(); i++) {
+                String mime = ex.getTrackFormat(i).getString(android.media.MediaFormat.KEY_MIME);
+                if (mime != null && mime.startsWith("video/")) {
+                    track = i;
+                    break;
+                }
+            }
+            if (track < 0) return new double[0];
+            ex.selectTrack(track);
+            int n = (int) Math.ceil(Math.max(1, duration)) + 1;
+            double[] c = new double[n];
+            int k = 0;
+            do {
+                long t = ex.getSampleTime();
+                if (t < 0) break;
+                if ((ex.getSampleFlags() & android.media.MediaExtractor.SAMPLE_FLAG_SYNC) != 0) {
+                    int s = (int) (t / 1_000_000L);
+                    if (s >= 0 && s < n) c[s]++;
+                }
+                if ((++k & 1023) == 0 && cancel.get()) throw new JobQueue.Cancelled();
+            } while (ex.advance());
+            return c;
+        } finally {
+            ex.release();
+        }
     }
 
     JSONObject downloadModel(JobQueue.Ctx ctx) throws Exception {

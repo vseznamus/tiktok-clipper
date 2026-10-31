@@ -20,7 +20,7 @@ import java.util.Locale;
  * другие приложения на телефоне не смогут управлять нарезкой.
  */
 public class Api implements MiniHttp.Handler {
-    public static final String VERSION = "1.3.0-android";
+    public static final String VERSION = "1.4.0-android";
     public static final String COOKIE = "clipper_k";
 
     private final Store store;
@@ -39,12 +39,14 @@ public class Api implements MiniHttp.Handler {
         this.queue = queue;
         this.token = token;
         this.discover = new Discover(store, http);
+        this.tmdb = new Tmdb(store, http);
     }
 
     final Discover discover;
+    public final Tmdb tmdb;
 
     /** Ключи сервисов не отдаются в интерфейс целиком — только последние 4 символа. */
-    static final String[] SECRET_KEYS = {"twitch_client_id", "twitch_client_secret", "youtube_api_key"};
+    static final String[] SECRET_KEYS = {"twitch_client_id", "twitch_client_secret", "youtube_api_key", "tmdb_key"};
 
     static JSONObject maskSecrets(JSONObject s) throws JSONException {
         for (String k : SECRET_KEYS) {
@@ -180,6 +182,58 @@ public class Api implements MiniHttp.Handler {
             case "upload":
                 throw new ApiError(400, "В приложении видео выбирается кнопкой «Выбрать видео на телефоне».");
             case "today": return todayView();
+            case "tmdb": {
+                boolean refresh = "1".equals(r.q("refresh", ""));
+                String what = seg.length > 1 ? seg[1] : "";
+                if (what.equals("lists") && m.equals("GET")) return MiniHttp.Response.json(tmdb.lists(refresh));
+                if (what.equals("search") && m.equals("GET")) return MiniHttp.Response.json(new JSONObject().put("results", tmdb.search(r.q("q", ""))));
+                if (what.equals("source") && seg.length == 3 && m.equals("GET")) {
+                    JSONObject src = store.getSource(seg[2]);
+                    if (src == null) throw new ApiError(404, "Источник не найден");
+                    JSONArray fs;
+                    try {
+                        fs = platform.listFiles(src);
+                    } catch (Exception e) {
+                        fs = new JSONArray();
+                    }
+                    return MiniHttp.Response.json(tmdb.forSource(src, fs, refresh));
+                }
+                if (what.equals("link") && m.equals("POST")) {
+                    JSONObject b = r.json();
+                    if (store.getSource(b.optString("source_id")) == null) throw new ApiError(404, "Источник не найден");
+                    long id = b.optLong("tmdb_id", 0);
+                    String ty = b.optString("tmdb_type");
+                    if (id > 0 && !ty.equals("tv") && !ty.equals("movie")) throw new ApiError(400, "Неверный тип");
+                    store.updateSourceFields(b.optString("source_id"), id > 0 ? new JSONObject().put("tmdb_id", id).put("tmdb_type", ty)
+                            : new JSONObject().put("tmdb_id", JSONObject.NULL).put("tmdb_type", JSONObject.NULL));
+                    return ok();
+                }
+                break;
+            }
+            case "plan": {
+                if (seg.length == 1 && m.equals("GET")) return MiniHttp.Response.json(new JSONObject().put("items", planView()));
+                if (seg.length == 2 && seg[1].equals("clear") && m.equals("POST")) {
+                    Planner.save(store, new JSONArray());
+                    return ok();
+                }
+                if (seg.length == 2 && m.equals("DELETE")) {
+                    Planner.remove(store, seg[1]);
+                    return ok();
+                }
+                if (seg.length == 3 && m.equals("POST")) {
+                    JSONObject it = Planner.get(store, seg[1]);
+                    if (it == null) throw new ApiError(404, "Пункт плана не найден");
+                    if (seg[2].equals("clip")) {
+                        Planner.update(store, seg[1], new JSONObject().put("job_id", Planner.submitClip(queue, platform, it)));
+                        return ok();
+                    }
+                    if (seg[2].equals("published")) {
+                        markPlanPublished(it);
+                        return MiniHttp.Response.json(new JSONObject().put("ok", true).put("message", "Отмечено: опубликовано"));
+                    }
+                }
+                break;
+            }
             case "discover": {
                 boolean refresh = "1".equals(r.q("refresh", ""));
                 String what = seg.length > 1 ? seg[1] : "";
@@ -355,11 +409,13 @@ public class Api implements MiniHttp.Handler {
                 }
                 case "twitch_client_id":
                 case "twitch_client_secret":
-                case "youtube_api_key": {
+                case "youtube_api_key":
+                case "tmdb_key": {
                     String v = b.optString(k, "").trim();
-                    if (v.length() > 200 || !v.matches("[A-Za-z0-9_\\-.]*")) throw new ApiError(400, "Ключ содержит лишние символы — скопируйте его заново");
+                    if (v.length() > 600 || !v.matches("[A-Za-z0-9_\\-.]*")) throw new ApiError(400, "Ключ содержит лишние символы — скопируйте его заново");
                     patch.put(k, v);
                     discover.clearCache();
+                    tmdb.clearCache();
                     break;
                 }
                 default:
@@ -389,6 +445,59 @@ public class Api implements MiniHttp.Handler {
             }
         }
         return new JSONObject().put("items", items);
+    }
+
+    /** План с состоянием клипов: в очереди / собирается / готов / ошибка. */
+    JSONArray planView() throws JSONException {
+        JSONArray all = Planner.load(store), out = new JSONArray();
+        for (int i = 0; i < all.length(); i++) {
+            JSONObject it = new JSONObject(all.getJSONObject(i).toString());
+            String jid = it.optString("job_id");
+            String status = "none";
+            if (!jid.isEmpty()) {
+                JSONObject j = queue.get(jid);
+                if (j == null) status = "none";
+                else {
+                    status = j.optString("status");
+                    it.put("progress", j.optDouble("progress", 0)).put("stage", j.optString("stage")).put("error", j.optString("error"));
+                    JSONObject res = j.optJSONObject("result");
+                    if (res != null && !res.optString("clip_id").isEmpty()) {
+                        JSONObject meta = loadClip(res.optString("clip_id"));
+                        if (meta != null) it.put("clip_id", meta.optString("id")).put("filename", meta.optString("filename"));
+                        else status = "none"; // клип удалён
+                    }
+                }
+            }
+            it.put("clip_status", status);
+            out.put(it);
+        }
+        return out;
+    }
+
+    private void markPlanPublished(JSONObject it) throws Exception {
+        Planner.update(store, it.getString("id"), new JSONObject().put("published", true));
+        String cid = it.optString("clip_id");
+        if (cid.isEmpty()) {
+            JSONArray pv = planView();
+            for (int i = 0; i < pv.length(); i++) {
+                JSONObject v = pv.getJSONObject(i);
+                if (v.optString("id").equals(it.getString("id"))) cid = v.optString("clip_id");
+            }
+        }
+        JSONObject clip = cid.isEmpty() ? null : loadClip(cid);
+        if (clip != null) {
+            clip.put("published", true);
+            saveClip(clip);
+        }
+        synchronized (Store.stateLock()) {
+            JSONObject st = store.loadState();
+            JSONObject uf = st.optJSONObject("used_files");
+            if (uf == null) st.put("used_files", uf = new JSONObject());
+            JSONArray a = uf.optJSONArray(it.getString("source_id"));
+            if (a == null) uf.put(it.getString("source_id"), a = new JSONArray());
+            if (!Store.contains(a, it.getString("file"))) a.put(it.getString("file"));
+            store.saveState(st);
+        }
     }
 
     private JSONObject cleanSource(JSONObject b) throws JSONException {
@@ -437,6 +546,15 @@ public class Api implements MiniHttp.Handler {
         }
         JSONObject out = new JSONObject();
         out.put("today", d.toString());
+        JSONArray pv = planView(), planToday = new JSONArray(), planNext = new JSONArray();
+        for (int i = 0; i < pv.length(); i++) {
+            JSONObject it = pv.getJSONObject(i);
+            LocalDate pd = LocalDate.parse(it.getString("date"));
+            if (it.optBoolean("published")) continue;
+            if (!pd.isAfter(d)) planToday.put(it.put("overdue", pd.isBefore(d)));
+            else if (planNext.length() < 6) planNext.put(it);
+        }
+        out.put("plan_today", planToday).put("plan_next", planNext);
         if (posts.isEmpty()) {
             out.put("empty", true);
             return MiniHttp.Response.json(out);
@@ -545,6 +663,13 @@ public class Api implements MiniHttp.Handler {
                 JSONObject meta = loadClip(p.optString("clip_id"));
                 if (meta == null) throw new ApiError(404, "Клип не найден");
                 title = "Пересборка: " + meta.optString("filename");
+                break;
+            }
+            case "plan": {
+                JSONObject src = store.getSource(p.optString("source_id"));
+                if (src == null) throw new ApiError(400, "Выберите источник");
+                p.put("start", p.optString("start", "").isEmpty() ? today().toString() : p.getString("start"));
+                title = "План на " + Math.max(1, Math.min(7, p.optInt("count", 3))) + " дн.: " + src.optString("title");
                 break;
             }
             case "model":

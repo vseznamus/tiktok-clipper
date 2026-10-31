@@ -130,6 +130,9 @@ input[type=range]::-moz-range-thumb { width: 26px; height: 26px; border-radius: 
 
 /* «Моменты» */
 .seg3 { grid-template-columns: 1fr 1fr 1fr; }
+.seg4 { grid-template-columns: 1fr 1fr; }
+.seg4 button { font-size: 16px; line-height: 1.15; min-height: 52px; padding: 4px; }
+details.card > summary { cursor: pointer; min-height: 32px; display: flex; align-items: center; font-size: 18px; }
 .seg3 button { font-size: 16px; line-height: 1.15; min-height: 56px; padding: 4px; }
 .vod { border-top: 1px solid var(--line); padding-top: 12px; margin-top: 12px; }
 .vod:first-of-type { border-top: 0; margin-top: 4px; }
