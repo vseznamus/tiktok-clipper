@@ -141,6 +141,53 @@ async function check(page, name, full = false) {
     await page.click('[data-model="whisper-small"]');
     await page.waitForSelector('[data-mdel="whisper-small"]', { timeout: 30000 });
 
+    // «Моменты»: без ключей — подсказка; ключи в «Настройках»; Twitch-клипы зрителей → «Резать»
+    await page.click('#nav a[data-tab="discover"]');
+    await page.waitForSelector("text=Нужен ключ Twitch");
+    await check(page, "a11_momenty_bez_klyucha");
+    await page.goto(BASE + "/#/settings");
+    await page.waitForSelector("#bKeys");
+    await page.fill("#kTwId", "abc123clientid");
+    await page.fill("#kTwSec", "secretsecret999");
+    await page.fill("#kYt", "AIzaFakeKey0000");
+    await page.click("#bKeys");
+    await page.waitForFunction(() => (document.querySelector("#kTwSec") || {}).placeholder?.includes("…t999"));
+    if ((await page.content()).includes("secretsecret999")) fail("ключ показан целиком");
+    step("ключи сохранены, в интерфейсе видны только последние символы");
+    await page.click("text=Стример Вася");
+    await page.waitForSelector("#sTw");
+    await page.fill("#sTw", "vasya_live");
+    await page.fill("#sY", "UCvasyaVasyaVasyaVasya00");
+    await page.click("#bSave");
+    await page.waitForSelector("h1:has-text('Настройки')");
+    await page.click('#nav a[data-tab="discover"]');
+    await page.waitForSelector(".mom");
+    const tw = await page.innerText("#dBox");
+    if (!tw.includes("Вася испугался скримера") || !tw.includes("клипов: 2")) fail("моменты Twitch: " + tw.slice(0, 300));
+    await check(page, "a12_momenty_twitch", true);
+    await page.click('[data-cut="0:0:0"]');
+    await page.waitForSelector(".sheet");
+    if (!(await page.innerText(".sheet")).includes("похоже, это она")) fail("файл с датой эфира не подсказан");
+    await check(page, "a13_vybor_fayla_zapisi");
+    await page.click(".sheet [data-i='0']");
+    await page.waitForSelector("#pv");
+    const ts = await page.inputValue("#tStart");
+    if (ts !== "0:09.0") fail("момент открыт не с той минуты: " + ts);
+    step(`Twitch: клипы зрителей → моменты; «Резать» → выбор файла записи → клип открыт с ${ts}`);
+    await page.click('#nav a[data-tab="discover"]');
+    await page.waitForSelector(".mom");
+    if (!(await page.innerText("#dBox")).includes("stream_2026-10-28.mp4")) fail("привязка файла не запомнилась");
+    await page.click('#dSeg button[data-s="streams"]');
+    await page.waitForSelector("[data-find]");
+    await page.click("[data-find]");
+    await page.waitForSelector(".mom");
+    const yt = await page.innerText("#dBox");
+    if (!yt.includes("упоминаний: 2") || !yt.includes("я упал со стула")) fail("моменты YouTube: " + yt.slice(0, 300));
+    await check(page, "a14_momenty_youtube", true);
+    await page.click('#dSeg button[data-s="videos"]');
+    await page.waitForSelector("text=Обзор новой игры");
+    step("YouTube: стримы — моменты по таймкодам в комментариях; «каналы» — обычные видео");
+
     // отдельное видео через системное окно
     await page.goto(BASE + "/#/clip");
     await page.waitForSelector("#srcSel");

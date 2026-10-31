@@ -301,13 +301,156 @@ public class CoreTest {
                 String[] r = get(base + "/media/x/a.mp4", ck, "bytes=1000-1999");
                 check(r[0].equals("206") && r[3].equals("1000"), "Range: " + r[0] + " " + r[3]);
                 check(get(base + "/", ck, null)[1].contains("<html"), "index.html");
+                store.saveSettings(new JSONObject().put("twitch_client_secret", "SuperSecret123456"));
+                String cfg = get(base + "/api/config", ck, null)[1];
+                check(!cfg.contains("SuperSecret123456") && cfg.contains("\"twitch_client_secret_set\":true") && cfg.contains("…3456"), "ключ не отдаётся целиком");
+                String[] bad = put(base + "/api/settings", ck, "{\"youtube_api_key\":\"ключ с пробелами\"}");
+                check(bad[0].equals("400"), "кривой ключ отклоняется: " + bad[0]);
             } finally {
                 http.stop();
             }
         });
 
+        // ---------------------------------------------------------------- «Моменты»
+        test("Twitch: клипы зрителей → моменты в записях эфиров, новый ключ доступа при 401", () -> {
+            Store store = new Store(Files.createTempDirectory("tw").toFile());
+            store.saveSettings(new JSONObject().put("twitch_client_id", "cid").put("twitch_client_secret", "sec"));
+            store.upsertSource(new JSONObject().put("type", "stream").put("title", "Стример").put("twitch_login", "https://www.twitch.tv/Streamer_1"));
+            final int[] tokens = {0}, users = {0};
+            Discover d = new Discover(store, (url, h, body) -> {
+                if (url.startsWith("https://id.twitch.tv/oauth2/token")) {
+                    check(body.contains("client_id=cid") && body.contains("grant_type=client_credentials"), body);
+                    tokens[0]++;
+                    return new Discover.Resp(200, "{\"access_token\":\"T" + tokens[0] + "\",\"expires_in\":3600}");
+                }
+                check("cid".equals(h.get("Client-Id")), "Client-Id");
+                if (url.contains("/users?login=streamer_1")) {
+                    if (users[0]++ == 0) return new Discover.Resp(401, "{}"); // ключ доступа устарел
+                    check(h.get("Authorization").equals("Bearer T2"), h.get("Authorization"));
+                    return new Discover.Resp(200, "{\"data\":[{\"id\":\"42\",\"display_name\":\"Streamer_1\"}]}");
+                }
+                if (url.contains("/videos?user_id=42")) return new Discover.Resp(200, "{\"data\":["
+                        + "{\"id\":\"v1\",\"title\":\"Эфир 1\",\"created_at\":\"2026-10-30T18:00:00Z\",\"duration\":\"3h0m0s\",\"url\":\"u1\",\"view_count\":10},"
+                        + "{\"id\":\"v2\",\"title\":\"Эфир 2\",\"created_at\":\"2026-10-28T18:00:00Z\",\"duration\":\"1h2m3s\",\"url\":\"u2\",\"view_count\":5}]}");
+                if (url.contains("/clips?broadcaster_id=42")) {
+                    check(url.contains("started_at=2026-10-28T18"), url);
+                    return new Discover.Resp(200, "{\"data\":["
+                            + "{\"video_id\":\"v1\",\"vod_offset\":100,\"duration\":30,\"view_count\":500,\"title\":\"ахах\",\"url\":\"c1\"},"
+                            + "{\"video_id\":\"v1\",\"vod_offset\":120,\"duration\":40,\"view_count\":100,\"title\":\"b\",\"url\":\"c2\"},"
+                            + "{\"video_id\":\"v1\",\"vod_offset\":3000,\"duration\":20,\"view_count\":2000,\"title\":\"гол\",\"url\":\"c3\"},"
+                            + "{\"video_id\":\"v1\",\"vod_offset\":null,\"duration\":20,\"view_count\":9,\"title\":\"x\",\"url\":\"c4\"},"
+                            + "{\"video_id\":\"\",\"vod_offset\":null,\"duration\":20,\"view_count\":9,\"title\":\"y\",\"url\":\"c5\"}"
+                            + "],\"pagination\":{}}");
+                }
+                throw new IOException("неожиданный адрес " + url);
+            });
+            JSONObject r = d.twitch(false);
+            check(r.getBoolean("configured") && r.getBoolean("has_sources"), r.toString());
+            JSONObject st = r.getJSONArray("streamers").getJSONObject(0);
+            check(st.getBoolean("ok") && st.getString("login").equals("streamer_1"), st.toString());
+            JSONArray vods = st.getJSONArray("vods");
+            JSONObject v1 = vods.getJSONObject(0);
+            check(v1.getDouble("duration") == 10800 && vods.getJSONObject(1).getDouble("duration") == 3723, "длительность");
+            JSONArray ms = v1.getJSONArray("moments");
+            check(ms.length() == 2, ms.toString());
+            check(ms.getJSONObject(0).getDouble("t") == 3000 && ms.getJSONObject(0).getString("title").equals("гол"), "лучший момент первым");
+            JSONObject m2 = ms.getJSONObject(1);
+            check(m2.getDouble("t") == 100 && m2.getInt("clips") == 2 && m2.getLong("views") == 600 && m2.getDouble("end") == 160
+                    && m2.getString("title").equals("ахах"), m2.toString());
+            check(st.getInt("clips_without_vod") == 2, "клипы без записи");
+            check(vods.getJSONObject(1).getJSONArray("moments").length() == 0, "во второй записи моментов нет");
+            // привязка файла к записи запоминается; кэш не ходит в сеть повторно
+            d.link("tw:v1", "src/efir.mp4");
+            JSONObject again = d.twitch(false);
+            check(again.getJSONArray("streamers").getJSONObject(0).getJSONArray("vods").getJSONObject(0).getString("file").equals("src/efir.mp4"), "файл");
+            check(users[0] == 2 && tokens[0] == 2, "кэш: " + users[0] + " " + tokens[0]);
+        });
+        test("Twitch: без ключей — подсказка, неверные ключи — понятная ошибка", () -> {
+            Store store = new Store(Files.createTempDirectory("tw2").toFile());
+            store.upsertSource(new JSONObject().put("type", "stream").put("title", "S").put("twitch_login", "s"));
+            Discover d = new Discover(store, (url, h, body) -> new Discover.Resp(400, "{\"message\":\"invalid client\"}"));
+            check(!d.twitch(false).getBoolean("configured"), "без ключей");
+            store.saveSettings(new JSONObject().put("twitch_client_id", "a").put("twitch_client_secret", "b"));
+            JSONObject st = d.twitch(true).getJSONArray("streamers").getJSONObject(0);
+            check(!st.getBoolean("ok") && st.getString("error").contains("не принял ключи"), st.toString());
+        });
+        test("YouTube: трансляции и видео канала, моменты по таймкодам в комментариях", () -> {
+            Store store = new Store(Files.createTempDirectory("yt").toFile());
+            store.saveSettings(new JSONObject().put("youtube_api_key", "KEY"));
+            store.upsertSource(new JSONObject().put("type", "blogger").put("title", "Канал").put("youtube_channel_id", "UCabcdefghijklmnopqrstuv"));
+            final int[] pages = {0};
+            Discover d = new Discover(store, (url, h, body) -> {
+                check(url.contains("key=KEY"), url);
+                if (url.contains("/playlistItems?") ) {
+                    check(url.contains("playlistId=UUabcdefghijklmnopqrstuv"), url);
+                    return new Discover.Resp(200, "{\"items\":[{\"contentDetails\":{\"videoId\":\"aaaaaaaaaaa\"}},{\"contentDetails\":{\"videoId\":\"bbbbbbbbbbb\"}},"
+                            + "{\"contentDetails\":{\"videoId\":\"ccccccccccc\"}},{\"contentDetails\":{\"videoId\":\"ddddddddddd\"}}]}");
+                }
+                if (url.contains("/videos?")) return new Discover.Resp(200, "{\"items\":["
+                        + "{\"id\":\"aaaaaaaaaaa\",\"snippet\":{\"title\":\"Стрим\",\"publishedAt\":\"2026-10-29T10:00:00Z\",\"liveBroadcastContent\":\"none\"},"
+                        + "\"contentDetails\":{\"duration\":\"PT1H10M\"},\"statistics\":{\"viewCount\":\"1500\",\"commentCount\":\"40\"},"
+                        + "\"liveStreamingDetails\":{\"actualStartTime\":\"2026-10-29T09:00:00Z\",\"actualEndTime\":\"2026-10-29T10:10:00Z\"}},"
+                        + "{\"id\":\"bbbbbbbbbbb\",\"snippet\":{\"title\":\"Видео\",\"publishedAt\":\"2026-10-28T10:00:00Z\"},\"contentDetails\":{\"duration\":\"PT10M5S\"},\"statistics\":{}},"
+                        + "{\"id\":\"ccccccccccc\",\"snippet\":{\"title\":\"Shorts\"},\"contentDetails\":{\"duration\":\"PT30S\"},\"statistics\":{}},"
+                        + "{\"id\":\"ddddddddddd\",\"snippet\":{\"title\":\"Идёт сейчас\",\"liveBroadcastContent\":\"live\"},\"contentDetails\":{\"duration\":\"P0D\"},"
+                        + "\"liveStreamingDetails\":{\"actualStartTime\":\"2026-10-31T09:00:00Z\"}}]}");
+                if (url.contains("/commentThreads?")) {
+                    pages[0]++;
+                    String c = url.contains("pageToken=P2")
+                            ? com("на 12:40 лучшее", 0) + "," + com("1:02:03 жесть", 2) + "," + com("1:23:45 нет такого", 50)
+                            : com("12:34 ахах", 10) + "," + com("00:00 начало 01:00 a 02:00 b 03:00 c 04:00 d", 3) + "," + com("без времени", 99);
+                    return new Discover.Resp(200, "{\"items\":[" + c + "]" + (url.contains("pageToken") ? "" : ",\"nextPageToken\":\"P2\"") + "}");
+                }
+                throw new IOException("неожиданный адрес " + url);
+            });
+            JSONObject s = d.youtube("streams", false);
+            JSONArray sv = s.getJSONArray("channels").getJSONObject(0).getJSONArray("videos");
+            check(sv.length() == 1 && sv.getJSONObject(0).getString("title").equals("Стрим") && sv.getJSONObject(0).getDouble("duration") == 4200, sv.toString());
+            check(sv.getJSONObject(0).getString("created_at").startsWith("2026-10-29T09"), "дата начала эфира");
+            JSONArray vv = d.youtube("videos", false).getJSONArray("channels").getJSONObject(0).getJSONArray("videos");
+            check(vv.length() == 1 && vv.getJSONObject(0).getString("title").equals("Видео") && vv.getJSONObject(0).getDouble("duration") == 605, vv.toString());
+            JSONObject mo = d.youtubeMoments("aaaaaaaaaaa", 4200, false);
+            check(mo.getInt("comments") == 6 && pages[0] == 2, mo.toString());
+            JSONArray m = mo.getJSONArray("moments");
+            JSONObject top = m.getJSONObject(0);
+            check(top.getInt("mentions") == 2 && top.getDouble("t") > 753 && top.getDouble("t") < 758 && top.getString("quote").equals("12:34 ахах"), top.toString());
+            boolean late = false, chapters = false;
+            for (int i = 0; i < m.length(); i++) {
+                if (m.getJSONObject(i).getDouble("t") > 4200) late = true;
+                if (m.getJSONObject(i).getDouble("t") == 0 && m.getJSONObject(i).getDouble("score") > 0.5) chapters = true;
+            }
+            check(!late && !chapters, "таймкод за концом видео и оглавление: " + m);
+            check(m.getJSONObject(1).getString("quote").contains("1:02:03"), "второй — 1:02:03: " + m);
+            // кэш: второй раз комментарии не читаются, моменты видны в списке
+            d.youtubeMoments("aaaaaaaaaaa", 4200, false);
+            check(pages[0] == 2, "кэш моментов");
+            check(d.youtube("streams", false).getJSONArray("channels").getJSONObject(0).getJSONArray("videos").getJSONObject(0).has("moments"), "моменты в списке");
+        });
+        test("YouTube: лимит запросов и неверный ключ — понятные ошибки", () -> {
+            Store store = new Store(Files.createTempDirectory("yt2").toFile());
+            store.saveSettings(new JSONObject().put("youtube_api_key", "K"));
+            store.upsertSource(new JSONObject().put("type", "blogger").put("title", "К").put("youtube_channel_id", "UCabcdefghijklmnopqrstuv"));
+            final String[] err = {"quotaExceeded"};
+            Discover d = new Discover(store, (url, h, body) -> new Discover.Resp(403, "{\"error\":{\"errors\":[{\"reason\":\"" + err[0] + "\"}]}}"));
+            JSONObject c = d.youtube("videos", false).getJSONArray("channels").getJSONObject(0);
+            check(!c.getBoolean("ok") && c.getString("error").contains("лимит"), c.toString());
+            err[0] = "accessNotConfigured";
+            c = d.youtube("videos", true).getJSONArray("channels").getJSONObject(0);
+            check(c.getString("error").contains("YouTube Data API v3"), c.toString());
+            try {
+                d.youtubeMoments("../../etc", 0, false);
+                check(false, "неверный ID должен отклоняться");
+            } catch (ApiError e) {
+                check(e.getMessage().contains("ID"), e.getMessage());
+            }
+        });
+
         System.out.println("\nИтого: " + passed + " прошло, " + failed + " упало");
         System.exit(failed == 0 ? 0 : 1);
+    }
+
+    static String com(String text, int likes) {
+        return "{\"snippet\":{\"topLevelComment\":{\"snippet\":{\"textDisplay\":" + JSONObject.quote(text) + ",\"likeCount\":" + likes + "}}}}";
     }
 
     static String sh(String... cmd) throws Exception {
@@ -348,6 +491,19 @@ public class CoreTest {
         String body = new String(Store.readAll(in), StandardCharsets.UTF_8);
         if (code != 200) throw new IOException(code + " " + body);
         return body;
+    }
+
+    /** PUT: [код, тело] */
+    static String[] put(String url, String cookie, String json) throws Exception {
+        HttpURLConnection c = (HttpURLConnection) new URL(url).openConnection(java.net.Proxy.NO_PROXY);
+        c.setRequestMethod("PUT");
+        c.setDoOutput(true);
+        c.setRequestProperty("Cookie", encodeCookie(cookie));
+        c.setRequestProperty("Content-Type", "application/json");
+        c.getOutputStream().write(json.getBytes(StandardCharsets.UTF_8));
+        int code = c.getResponseCode();
+        InputStream in = code >= 400 ? c.getErrorStream() : c.getInputStream();
+        return new String[]{String.valueOf(code), new String(Store.readAll(in), StandardCharsets.UTF_8)};
     }
 
     static String getHost(int port, String path, String cookie, String host) throws Exception {

@@ -70,7 +70,7 @@ async function pollJob(id, onUpdate) {
 function bar(frac) { return `<div class="progress"><i style="width:${Math.round((frac || 0) * 100)}%"></i></div>`; }
 
 // ------------------------------------------------------------------ роутер
-const routes = { today: viewToday, clip: viewClip, cam: viewCam, queue: viewQueue, clips: viewClips,
+const routes = { today: viewToday, discover: viewDiscover, clip: viewClip, cam: viewCam, queue: viewQueue, clips: viewClips,
   clipview: viewClipView, settings: viewSettings, source: viewSource };
 
 function parseHash() {
@@ -173,6 +173,10 @@ async function viewClip(_arg, q) {
   const dr = S.draft;
   if (q.get("source") !== null) { dr.source_id = q.get("source"); if (!q.get("file")) dr.file = null; }
   if (q.get("file")) dr.file = q.get("file");
+  if (q.get("start") !== null) {
+    dr.start = Number(q.get("start")) || 0; dr.end = Number(q.get("end")) || null; S.moments = {};
+    history.replaceState(null, "", "#/clip");
+  }
   if (dr.source_id === undefined) dr.source_id = S.cfg.sources[0] ? S.cfg.sources[0].id : "";
   saveDraft();
   const opts = S.cfg.sources.map((s) => `<option value="${esc(s.id)}" ${s.id === dr.source_id ? "selected" : ""}>${esc(s.title)} (${esc(typeName(s.type))})</option>`).join("");
@@ -302,6 +306,7 @@ async function viewClip(_arg, q) {
     v.addEventListener("error", () => { frameMode = true; v.hidden = true; img.hidden = false; $("#pvNote").hidden = false; showFrame(dr.start); });
     v.addEventListener("loadedmetadata", () => { v.currentTime = dr.start; });
     v.addEventListener("timeupdate", () => {
+      if (!v.isConnected) return; // экран уже сменился, а видео досылает событие
       $("#seek").value = v.currentTime; $("#seekT").textContent = fmt(v.currentTime);
       if (stopAt != null && v.currentTime >= stopAt) { v.pause(); stopAt = null; }
     });
@@ -681,6 +686,7 @@ async function viewSettings() {
     <label class="f">Порядок типов</label><ul class="list" id="order"></ul>
     <button class="btn primary" id="bSched">Сохранить расписание</button></div>
 
+  ${APP ? keysCard(se) : ""}
   ${APP ? appAsrCard(st, se) : `  <div class="card"><h2>Распознавание речи</h2>
     <p class="small">faster-whisper: ${asr["faster-whisper"].ok ? '<span class="ok">установлен</span>' : `<span class="muted">${esc(asr["faster-whisper"].message)}</span>`}</p>
     <p class="small">whisper.cpp: ${asr["whisper.cpp"].ok ? `<span class="ok">установлен</span> · модели: ${esc(asr["whisper.cpp"].models.join(", ") || "нет")}` : `<span class="muted">${esc(asr["whisper.cpp"].message)}</span>`}</p>
@@ -732,6 +738,20 @@ async function viewSettings() {
     if (parseHash().name !== "settings") return;
     if (fin.status === "done") { toast("Модель удалена"); viewSettings(); } else { b.disabled = false; toast(fin.error || "Не получилось"); }
   }));
+  const bKeys = $("#bKeys");
+  if (bKeys) {
+    const send = async (body, msg) => { await api("/api/settings", { method: "PUT", body }); await loadCfg(true); toast(msg); viewSettings(); };
+    bKeys.onclick = async () => {
+      const body = {};
+      for (const [id, k] of KEY_FIELDS) { const v = $("#" + id).value.trim(); if (v) body[k] = v; }
+      if (!Object.keys(body).length) { toast("Вставьте ключ в нужное поле", true); return; }
+      await send(body, "Ключи сохранены");
+    };
+    $("#bKeysDel").onclick = async () => {
+      if (!confirm("Стереть все ключи с телефона?")) return;
+      await send(Object.fromEntries(KEY_FIELDS.map(([, k]) => [k, ""])), "Ключи стёрты");
+    };
+  }
   $("#bAsr").onclick = async () => {
     const body = { asr_backend: $("#aB").value, asr_model: $("#aM").value, asr_language: $("#aL").value, moment_len: +$("#mL").value };
     if ($("#vP")) body.x264_preset = $("#vP").value;
@@ -740,6 +760,156 @@ async function viewSettings() {
     await loadCfg(true); toast("Настройки сохранены");
   };
   const out = $("#bOut"); if (out) out.onclick = async () => { await fetch("/logout", { method: "POST" }); location.href = "/login"; };
+}
+
+const KEY_FIELDS = [["kTwId", "twitch_client_id"], ["kTwSec", "twitch_client_secret"], ["kYt", "youtube_api_key"]];
+function keysCard(se) {
+  const f = (id, k, label) => `<label class="f" for="${id}">${label}</label>
+    <input id="${id}" autocomplete="off" autocapitalize="off" spellcheck="false"
+      placeholder="${se[k + "_set"] ? `сохранён (${esc(se[k + "_hint"])}) — вставьте новый, чтобы заменить` : "не задан"}">`;
+  return `<div class="card"><h2>Ключи для вкладки «Моменты»</h2>
+    <p class="muted small">Бесплатные. Хранятся только на этом телефоне. Как получить — в инструкции, раздел «Моменты».</p>
+    ${f("kTwId", "twitch_client_id", "Twitch: Client ID")}
+    ${f("kTwSec", "twitch_client_secret", "Twitch: Client Secret")}
+    <p class="muted small"><a href="https://dev.twitch.tv/console/apps" target="_blank" rel="noopener">dev.twitch.tv/console/apps</a></p>
+    ${f("kYt", "youtube_api_key", "YouTube Data API: ключ")}
+    <p class="muted small"><a href="https://console.cloud.google.com/apis/library/youtube.googleapis.com" target="_blank" rel="noopener">console.cloud.google.com</a></p>
+    <div style="height:12px"></div><button class="btn primary" id="bKeys">Сохранить ключи</button>
+    <button class="btn ghost sm" id="bKeysDel">Стереть ключи</button></div>`;
+}
+
+// ------------------------------------------------------------------ «Моменты»: где зрители реагировали сильнее всего
+const DISC = [["twitch", "Twitch"], ["streams", "YouTube: стримы"], ["videos", "YouTube: каналы"]];
+function fmtNum(n) { n = Number(n) || 0; return n >= 1e6 ? (n / 1e6).toFixed(1).replace(".0", "") + " млн" : n >= 1e3 ? (n / 1e3).toFixed(1).replace(".0", "") + " тыс." : String(n); }
+function fmtDay(iso) { const d = new Date(iso); return isNaN(d) ? "" : `${d.getDate()} ${MON[d.getMonth()]}`; }
+
+async function viewDiscover(sec, q) {
+  sec = DISC.some(([k]) => k === sec) ? sec : (S.discSec || "twitch");
+  S.discSec = sec;
+  await loadCfg();
+  app.innerHTML = `<h1>Моменты</h1>
+  <div class="seg seg3" id="dSeg">${DISC.map(([k, n]) => `<button data-s="${k}" class="${k === sec ? "on" : ""}">${n}</button>`).join("")}</div>
+  <p class="muted small" style="margin:10px 2px">${sec === "twitch" ? "Моменты, из которых зрители нарезали больше всего клипов."
+    : "Минуты, которые зрители чаще всего упоминают в комментариях (например, «12:34 ахах»)."}</p>
+  <div id="dBox"><p class="muted pad">Загружаю…</p></div>
+  <button class="btn ghost sm" id="dRef">Обновить</button>`;
+  $$("#dSeg button").forEach((b) => (b.onclick = () => go("#/discover/" + b.dataset.s)));
+  $("#dRef").onclick = () => render(true);
+  render(q && q.get("refresh") === "1");
+
+  async function render(refresh) {
+    const box = $("#dBox");
+    box.innerHTML = `<p class="muted pad">Загружаю…</p>`;
+    let d;
+    try {
+      d = sec === "twitch" ? await api("/api/discover/twitch" + (refresh ? "?refresh=1" : ""))
+        : await api(`/api/discover/youtube?kind=${sec}` + (refresh ? "&refresh=1" : ""));
+    } catch (e) { box.innerHTML = `<p class="err pad">${esc(e.message)}</p>`; return; }
+    if (parseHash().name !== "discover" || S.discSec !== sec) return;
+    const yt = sec !== "twitch";
+    if (!d.configured) {
+      box.innerHTML = `<div class="card stack"><h2>Нужен ключ ${yt ? "YouTube" : "Twitch"}</h2>
+        <p>${yt ? "Ключ YouTube Data API бесплатный: Google Cloud → создать проект → включить «YouTube Data API v3» → «Учётные данные» → «Создать ключ API»."
+          : "Ключи Twitch бесплатные: dev.twitch.tv/console/apps → «Register Your Application» → Client ID и Client Secret."}</p>
+        <p class="muted small">Пошагово — в инструкции, раздел «Моменты».</p>
+        <a class="btn primary" href="#/settings">Ввести ключ в «Настройках»</a></div>`;
+      return;
+    }
+    if (!d.has_sources) {
+      box.innerHTML = `<div class="card stack"><h2>Нет источников с ${yt ? "каналом YouTube" : "логином Twitch"}</h2>
+        <p>Откройте источник (стрим или блогер) и заполните поле «${yt ? "YouTube: ID канала" : "Twitch: логин"}».</p>
+        <a class="btn" href="#/settings">Открыть «Настройки»</a></div>`;
+      return;
+    }
+    const groups = yt ? d.channels : d.streamers;
+    box.innerHTML = groups.map((g, gi) => `<div class="card"><h2>${esc(g.name || g.title)}</h2>
+      ${g.ok === false ? `<p class="err">${esc(g.error)}</p>` : ""}
+      ${(yt ? g.videos : g.vods || []).map((v, vi) => itemHtml(g, v, gi, vi)).join("")
+        || (g.ok === false ? "" : `<p class="muted">${yt ? (sec === "streams" ? "Прошедших трансляций не найдено." : "Видео не найдено.") : "Записей эфиров нет (или стример их не сохраняет)."}</p>`)}
+    </div>`).join("");
+    bind(groups, yt);
+  }
+
+  function itemHtml(g, v, gi, vi) {
+    const yt = sec !== "twitch";
+    const head = `<div class="vod"><b class="wrap">${esc(v.title)}</b>
+      <p class="muted small">${fmtDay(v.created_at)} · ${fmt(v.duration, false)} · ${fmtNum(v.views)} просмотров${yt ? ` · ${fmtNum(v.comments)} комм.` : ""}</p>
+      ${v.file ? `<p class="small wrap">Файл: <b>${esc(v.file.split("/").pop())}</b> <a href="#" data-unlink="${gi}:${vi}">другой</a></p>` : ""}`;
+    let body;
+    if (!v.moments) body = `<button class="btn sm" data-find="${gi}:${vi}">Найти моменты по комментариям</button>`;
+    else if (!v.moments.length) body = `<p class="muted small">${yt ? "В комментариях нет таймкодов." : "Из этой записи зрители ещё не нарезали клипов."}</p>`;
+    else body = v.moments.map((m, mi) => `<div class="mom"><div class="row"><span class="tm">${fmt(m.t, false)}</span><span class="grow"></span>
+        <span class="small muted">${yt ? `упоминаний: ${m.mentions}` : `клипов: ${m.clips} · ${fmtNum(m.views)} просм.`}</span></div>
+      <span class="small wrap">«${esc(yt ? m.quote : m.title)}»</span>
+      <div class="row"><button class="btn sm primary" data-cut="${gi}:${vi}:${mi}">Резать</button>
+        <a class="btn sm ghost" target="_blank" rel="noopener" href="${esc(yt ? `${v.url}&t=${Math.floor(m.t)}s` : m.clip_url)}">${yt ? "YouTube ↗" : "Клип ↗"}</a></div></div>`).join("");
+    return head + body + `</div>`;
+  }
+
+  function bind(groups, yt) {
+    const at = (s) => { const [gi, vi, mi] = s.split(":").map(Number); const g = groups[gi], v = (yt ? g.videos : g.vods)[vi]; return { g, v, m: mi != null ? v.moments[mi] : null }; };
+    $$("[data-find]").forEach((b) => (b.onclick = async () => {
+      const { v } = at(b.dataset.find);
+      b.disabled = true; b.textContent = "Читаю комментарии…";
+      try {
+        const r = await api(`/api/discover/ytmoments?video=${encodeURIComponent(v.id)}&duration=${v.duration || 0}`);
+        v.moments = r.moments; v.comments_read = r.comments;
+        const [gi, vi] = b.dataset.find.split(":").map(Number);
+        b.closest(".vod").outerHTML = itemHtml(groups[gi], v, gi, vi);
+        bind(groups, yt);
+      } catch (e) { b.disabled = false; b.textContent = "Найти моменты по комментариям"; }
+    }));
+    $$("[data-unlink]").forEach((a) => (a.onclick = async (e) => {
+      e.preventDefault();
+      const { v } = at(a.dataset.unlink);
+      await api("/api/discover/link", { method: "POST", body: { key: v.key, file: "" } });
+      v.file = null; render(false);
+    }));
+    $$("[data-cut]").forEach((b) => (b.onclick = async () => {
+      const { g, v, m } = at(b.dataset.cut);
+      let file = v.file;
+      if (!file) {
+        file = await pickFileFor(g.source_id, v);
+        if (!file) return;
+        await api("/api/discover/link", { method: "POST", body: { key: v.key, file } });
+      }
+      const mlen = Number(S.cfg.settings.moment_len) || 30;
+      const start = Math.max(0, m.t - 3);
+      const end = Math.min(start + 180, Math.max(start + mlen, (m.end || 0) + 2));
+      const src = file.startsWith("_picked/") ? "" : g.source_id;
+      Object.assign(S.draft, { source_id: src, file, start, end }); saveDraft();
+      go(`#/clip?source=${encodeURIComponent(src)}&file=${encodeURIComponent(file)}&start=${start.toFixed(1)}&end=${end.toFixed(1)}`);
+    }));
+  }
+}
+
+/** Какой файл из папки источника — эта запись? Даты в имени файла подсказывают ответ. */
+function pickFileFor(sourceId, item) {
+  return new Promise(async (resolve) => {
+    const data = await api("/api/files?source=" + encodeURIComponent(sourceId)).catch(() => ({ files: [] }));
+    const d = new Date(item.created_at), p2 = (n) => String(n).padStart(2, "0");
+    const keys = isNaN(d) ? [] : [`${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())}`, `${d.getFullYear()}${p2(d.getMonth() + 1)}${p2(d.getDate())}`,
+      `${p2(d.getDate())}.${p2(d.getMonth() + 1)}.${d.getFullYear()}`, `${d.getFullYear()}_${p2(d.getMonth() + 1)}_${p2(d.getDate())}`];
+    const guess = (f) => keys.some((k) => f.name.includes(k));
+    const files = [...data.files].sort((a, b) => guess(b) - guess(a));
+    const sh = document.createElement("div");
+    sh.className = "sheet";
+    sh.innerHTML = `<div><h2>Какой файл — эта запись?</h2>
+      <p class="muted small wrap">«${esc(item.title)}» · ${fmtDay(item.created_at)} · ${fmt(item.duration, false)}</p>
+      <p class="muted small">Видео не скачивается — выберите файл, который уже лежит в папке источника. Приложение запомнит выбор.</p>
+      ${files.length ? `<ul class="list">${files.map((f, i) => `<li><button class="item" data-i="${i}"><span class="t"><b class="wrap">${esc(f.name)}</b><br>
+        <span class="muted small">${fmtSize(f.size)}${guess(f) ? " · ★ похоже, это она (дата в имени)" : ""}</span></span><span class="chev">›</span></button></li>`).join("")}</ul>`
+        : `<p class="warn">В папке источника нет видео.</p>`}
+      ${APP ? `<button class="btn ghost" id="shPick">Выбрать видео на телефоне</button>` : ""}
+      <button class="btn ghost" id="shCancel">Отмена</button></div>`;
+    document.body.appendChild(sh);
+    const done = (v) => { sh.remove(); resolve(v); };
+    $$("[data-i]", sh).forEach((b) => (b.onclick = () => done(files[+b.dataset.i].path)));
+    $("#shCancel", sh).onclick = () => done(null);
+    sh.onclick = (e) => { if (e.target === sh) done(null); };
+    const pk = $("#shPick", sh);
+    if (pk) pk.onclick = () => { window.onVideoPicked = (path) => done(path); window.AndroidApp.pickVideo(); };
+  });
 }
 
 function appAsrCard(st, se) {
@@ -791,7 +961,8 @@ async function viewSource(id) {
     <p class="muted small wrap">Это подпапка в общей папке ${esc((await loadStatus()).media_root)}. Если её нет — создам.</p>`}
     <div id="ytBox"><label class="f" for="sY">YouTube: ID канала (необязательно)</label><input id="sY" value="${esc(s.youtube_channel_id || "")}" placeholder="UCxxxxxxxxxxxxxxxxxxxxxx">
       <p class="muted small">Нужен, чтобы на экране «Сегодня» видеть свежее видео. ID начинается с UC.</p>
-      ${APP ? "" : `<label class="f" for="sTw">Twitch: логин (необязательно)</label><input id="sTw" value="${esc(s.twitch_login || "")}">`}</div>
+      <label class="f" for="sTw">Twitch: логин (необязательно)</label><input id="sTw" value="${esc(s.twitch_login || "")}" placeholder="например, buster">
+      <p class="muted small">Логин из адреса канала: twitch.tv/<b>логин</b>. Нужен для вкладки «Моменты».</p></div>
     <label class="toggle"><span>Источник включён</span><input type="checkbox" id="sEn" ${s.enabled !== false ? "checked" : ""}></label>
   </div>
   <div class="card"><h2>Профиль нарезки</h2>
@@ -871,4 +1042,5 @@ async function viewSource(id) {
 
 // ------------------------------------------------------------------ старт
 if (!APP && "serviceWorker" in navigator && window.isSecureContext) navigator.serviceWorker.register("/sw.js").catch(() => {});
+if (APP) { const t = $('#nav a[data-tab="discover"]'); t.hidden = false; $("#nav").classList.add("n6"); }
 route(); refreshBadge();

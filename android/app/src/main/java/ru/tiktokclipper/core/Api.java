@@ -20,7 +20,7 @@ import java.util.Locale;
  * другие приложения на телефоне не смогут управлять нарезкой.
  */
 public class Api implements MiniHttp.Handler {
-    public static final String VERSION = "1.1.0-android";
+    public static final String VERSION = "1.2.0-android";
     public static final String COOKIE = "clipper_k";
 
     private final Store store;
@@ -30,10 +30,30 @@ public class Api implements MiniHttp.Handler {
     public volatile LocalDate fixedToday; // для тестов
 
     public Api(Store store, Platform platform, JobQueue queue, String token) {
+        this(store, platform, queue, token, null);
+    }
+
+    public Api(Store store, Platform platform, JobQueue queue, String token, Discover.Http http) {
         this.store = store;
         this.platform = platform;
         this.queue = queue;
         this.token = token;
+        this.discover = new Discover(store, http);
+    }
+
+    final Discover discover;
+
+    /** Ключи сервисов не отдаются в интерфейс целиком — только последние 4 символа. */
+    static final String[] SECRET_KEYS = {"twitch_client_id", "twitch_client_secret", "youtube_api_key"};
+
+    static JSONObject maskSecrets(JSONObject s) throws JSONException {
+        for (String k : SECRET_KEYS) {
+            String v = s.optString(k, "").trim();
+            s.remove(k);
+            s.put(k + "_set", !v.isEmpty());
+            s.put(k + "_hint", v.length() > 4 ? "…" + v.substring(v.length() - 4) : "");
+        }
+        return s;
     }
 
     LocalDate today() {
@@ -160,6 +180,21 @@ public class Api implements MiniHttp.Handler {
             case "upload":
                 throw new ApiError(400, "В приложении видео выбирается кнопкой «Выбрать видео на телефоне».");
             case "today": return todayView();
+            case "discover": {
+                boolean refresh = "1".equals(r.q("refresh", ""));
+                String what = seg.length > 1 ? seg[1] : "";
+                if (what.equals("twitch") && m.equals("GET")) return MiniHttp.Response.json(discover.twitch(refresh));
+                if (what.equals("youtube") && m.equals("GET")) return MiniHttp.Response.json(discover.youtube(r.q("kind", "videos"), refresh));
+                if (what.equals("ytmoments") && m.equals("GET")) {
+                    return MiniHttp.Response.json(discover.youtubeMoments(r.q("video", ""), Double.parseDouble(r.q("duration", "0")), refresh));
+                }
+                if (what.equals("link") && m.equals("POST")) {
+                    JSONObject b = r.json();
+                    discover.link(b.optString("key"), b.optString("file"));
+                    return ok();
+                }
+                break;
+            }
             case "feed": {
                 JSONObject src = store.getSource(seg.length > 1 ? seg[1] : "");
                 if (src == null) throw new ApiError(404, "Источник не найден");
@@ -246,7 +281,7 @@ public class Api implements MiniHttp.Handler {
         for (String k : new String[]{"start_date", "interval_days", "posts_per_block", "type_order"}) sch.put(k, cfg.opt(k));
         out.put("schedule", sch);
         out.put("sources", srcs);
-        out.put("settings", store.settings());
+        out.put("settings", maskSecrets(store.settings()));
         JSONObject styles = new JSONObject(), all = Store.subStyles();
         for (Iterator<String> it = all.keys(); it.hasNext(); ) {
             String k = it.next();
@@ -302,11 +337,20 @@ public class Api implements MiniHttp.Handler {
                 case "bitrate_mbps":
                     patch.put(k, Math.min(30, Math.max(2, b.optInt(k, 10))));
                     break;
+                case "twitch_client_id":
+                case "twitch_client_secret":
+                case "youtube_api_key": {
+                    String v = b.optString(k, "").trim();
+                    if (v.length() > 200 || !v.matches("[A-Za-z0-9_\\-.]*")) throw new ApiError(400, "Ключ содержит лишние символы — скопируйте его заново");
+                    patch.put(k, v);
+                    discover.clearCache();
+                    break;
+                }
                 default:
                     break;
             }
         }
-        return store.saveSettings(patch);
+        return maskSecrets(store.saveSettings(patch));
     }
 
     private JSONObject cleanSource(JSONObject b) throws JSONException {

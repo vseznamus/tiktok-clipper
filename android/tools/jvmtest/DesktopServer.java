@@ -28,11 +28,42 @@ public class DesktopServer {
         h.put("moments", pf::moments);
         h.put("model", pf::model);
         JobQueue q = new JobQueue(store.jobsFile(), h);
-        api[0] = new Api(store, pf, q, TOKEN);
+        api[0] = new Api(store, pf, q, TOKEN, DesktopServer::fakeNet);
         q.start();
         MiniHttp http = new MiniHttp(api[0]);
         System.out.println("PORT " + http.start(port));
         Thread.currentThread().join();
+    }
+
+    /** Имитация Twitch и YouTube для вкладки «Моменты» (в тесте нет интернета и ключей). */
+    static Discover.Resp fakeNet(String url, Map<String, String> h, String body) {
+        String j;
+        if (url.contains("id.twitch.tv")) j = "{\"access_token\":\"t\",\"expires_in\":3600}";
+        else if (url.contains("/helix/users")) j = "{\"data\":[{\"id\":\"7\",\"display_name\":\"Vasya_Live\"}]}";
+        else if (url.contains("/helix/videos")) j = "{\"data\":[{\"id\":\"900\",\"title\":\"Проходим хоррор до утра\",\"created_at\":\"2026-10-28T19:00:00Z\","
+                + "\"duration\":\"4h12m5s\",\"url\":\"https://www.twitch.tv/videos/900\",\"view_count\":15400}]}";
+        else if (url.contains("/helix/clips")) j = "{\"data\":["
+                + "{\"video_id\":\"900\",\"vod_offset\":12,\"duration\":28,\"view_count\":8200,\"title\":\"Вася испугался скримера\",\"url\":\"https://clips.twitch.tv/a\"},"
+                + "{\"video_id\":\"900\",\"vod_offset\":20,\"duration\":30,\"view_count\":1300,\"title\":\"АААААА\",\"url\":\"https://clips.twitch.tv/b\"},"
+                + "{\"video_id\":\"900\",\"vod_offset\":7340,\"duration\":25,\"view_count\":2100,\"title\":\"Пасхалка в подвале\",\"url\":\"https://clips.twitch.tv/c\"}],\"pagination\":{}}";
+        else if (url.contains("/playlistItems")) j = "{\"items\":[{\"contentDetails\":{\"videoId\":\"vid00000001\"}},{\"contentDetails\":{\"videoId\":\"vid00000002\"}}]}";
+        else if (url.contains("/youtube/v3/videos")) j = "{\"items\":["
+                + "{\"id\":\"vid00000001\",\"snippet\":{\"title\":\"Ночной стрим: отвечаю на вопросы\",\"publishedAt\":\"2026-10-28T22:00:00Z\"},"
+                + "\"contentDetails\":{\"duration\":\"PT2H5M\"},\"statistics\":{\"viewCount\":\"48200\",\"commentCount\":\"612\"},"
+                + "\"liveStreamingDetails\":{\"actualStartTime\":\"2026-10-28T19:00:00Z\",\"actualEndTime\":\"2026-10-28T21:05:00Z\"}},"
+                + "{\"id\":\"vid00000002\",\"snippet\":{\"title\":\"Обзор новой игры\",\"publishedAt\":\"2026-10-27T12:00:00Z\"},"
+                + "\"contentDetails\":{\"duration\":\"PT18M40S\"},\"statistics\":{\"viewCount\":\"120000\",\"commentCount\":\"950\"}}]}";
+        else if (url.contains("/commentThreads")) {
+            String[][] cs = {{"0:15 я упал со стула 😂", "240"}, {"0:17 ахахах", "31"}, {"1:02:03 вот это поворот", "12"}, {"лучший стрим", "5"}};
+            StringBuilder b = new StringBuilder("{\"items\":[");
+            for (int i = 0; i < cs.length; i++) {
+                if (i > 0) b.append(',');
+                b.append("{\"snippet\":{\"topLevelComment\":{\"snippet\":{\"textDisplay\":").append(JSONObject.quote(cs[i][0]))
+                        .append(",\"likeCount\":").append(cs[i][1]).append("}}}}");
+            }
+            j = b.append("]}").toString();
+        } else return new Discover.Resp(404, "{}");
+        return new Discover.Resp(200, j);
     }
 
     static String sh(String... cmd) throws Exception {
