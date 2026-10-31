@@ -448,6 +448,37 @@ public class CoreTest {
             String ru = urls.get(urls.size() - 4);
             check(ru.contains("discover/movie?") && ru.contains("with_original_language=ru") && ru.contains("page=2"), ru);
         });
+        test("баннер: внутри безопасной зоны TikTok, сверху — над видео, снизу — субтитры поднимаются", () -> {
+            int[] t = Banner.rect("top", 1.0, 900, 300);
+            check(t[0] >= Subs.SAFE_LEFT && t[0] + t[2] <= Subs.SAFE_RIGHT && t[1] >= Subs.SAFE_TOP, "сверху в зоне: " + Arrays.toString(t));
+            check(t[1] + t[3] <= Banner.VIDEO_TOP, "сверху не залезает на видео: " + Arrays.toString(t));
+            int[] tall = Banner.rect("top", 1.0, 400, 1000);
+            check(tall[3] <= Banner.VIDEO_TOP - Subs.SAFE_TOP && tall[2] < 840, "высокая картинка ужата: " + Arrays.toString(tall));
+            int[] b = Banner.rect("bottom", 0.6, 600, 200);
+            check(b[1] + b[3] == Subs.SAFE_BOTTOM && Math.abs(b[2] - 504) <= 1, "снизу: " + Arrays.toString(b));
+            double sc = Banner.subCenter("bottom", b, Subs.subCenterY(Store.defaultProfile(), "single"));
+            check(sc + 110 < b[1], "субтитры над баннером: " + sc + " / " + b[1]);
+            check(Banner.subCenter("top", t, 1305.6) == 1305.6, "сверху субтитры на месте");
+            int[] c = Banner.rect("center", 0.5, 400, 400);
+            check(c[1] + c[3] < 1180, "по центру — не до субтитров: " + Arrays.toString(c));
+        });
+        test("хромакей: зелёный фон прозрачный, остальное не тронуто", () -> {
+            int[] px = {0xFF00FF00, 0xFF20D040, 0xFFFF0000, 0xFFFFFFFF, 0xFF406040, 0x8000FF00};
+            Chroma.key(px);
+            check((px[0] >>> 24) == 0 && (px[1] >>> 24) == 0, "чистый зелёный: " + Integer.toHexString(px[0]) + " " + Integer.toHexString(px[1]));
+            check(px[2] == 0xFFFF0000 && px[3] == 0xFFFFFFFF, "красный и белый не тронуты");
+            check(px[4] == 0xFF406040, "тёмно-зелёный (не фон) не тронут: " + Integer.toHexString(px[4]));
+            check((px[5] >>> 24) == 0, "полупрозрачный зелёный");
+        });
+        test("подпись для TikTok из имени файла", () -> {
+            String a = Captions.make("_picked/Breaking.Bad.S01E05.1080p.WEB-DL.mkv");
+            check(a.startsWith("Breaking Bad · 1 сезон, 5 серия\n") && a.contains("#breakingbad") && a.contains("#сериал"), a);
+            String b = Captions.make("Брат (1997) BDRip.avi");
+            check(b.startsWith("Брат\n") && b.contains("#брат") && b.contains("#фильм"), b);
+            String c = Captions.make("Кухня 2 сезон 3 серия.mp4");
+            check(c.startsWith("Кухня · 2 сезон, 3 серия"), c);
+            check(Captions.make("1080p.mkv").startsWith("Момент"), "пустое название");
+        });
         test("оценка сцен: эмоции в репликах поднимают момент при ровном звуке", () -> {
             double[] lv = new double[1200];
             Arrays.fill(lv, -30);

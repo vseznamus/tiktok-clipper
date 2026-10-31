@@ -66,7 +66,21 @@ public class MainActivity extends Activity {
         setContentView(web);
         if (state != null) web.restoreState(state);
         else web.loadUrl(engine.startUrl());
+        openFromNotification(getIntent());
         askPermissions();
+    }
+
+    @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        openFromNotification(intent);
+    }
+
+    /** Уведомление ночной нарезки открывает вкладку «Клип» (там «Готовые клипы»). */
+    private void openFromNotification(Intent intent) {
+        if (intent != null && intent.getData() != null && "narezka".equals(intent.getData().getScheme())) {
+            web.postDelayed(() -> js("location.hash = '#/clip'"), 1200);
+        }
     }
 
     private void askPermissions() {
@@ -130,6 +144,11 @@ public class MainActivity extends Activity {
         return "папка";
     }
 
+    private void copy(String text) {
+        android.content.ClipboardManager cm = (android.content.ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
+        if (cm != null) cm.setPrimaryClip(android.content.ClipData.newPlainText("Подпись", text));
+    }
+
     private Uri clipUri(String clipId) {
         JSONObject m = engine.api.loadClip(clipId);
         if (m == null || m.optString("media_uri").isEmpty()) return null;
@@ -163,9 +182,18 @@ public class MainActivity extends Activity {
             runOnUiThread(() -> {
                 Intent i = new Intent(Intent.ACTION_OPEN_DOCUMENT);
                 i.addCategory(Intent.CATEGORY_OPENABLE);
-                i.setType("image/*");
+                i.setType("*/*");
+                i.putExtra(Intent.EXTRA_MIME_TYPES, new String[]{"image/*", "video/*"}); // картинка или короткое видео
                 i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
                 startActivityForResult(i, REQ_IMAGE);
+            });
+        }
+
+        @JavascriptInterface
+        public void copyText(String text) {
+            runOnUiThread(() -> {
+                copy(text);
+                Toast.makeText(MainActivity.this, "Скопировано", Toast.LENGTH_SHORT).show();
             });
         }
 
@@ -179,6 +207,14 @@ public class MainActivity extends Activity {
                 }
                 Intent send = new Intent(Intent.ACTION_SEND).setType("video/mp4").putExtra(Intent.EXTRA_STREAM, u)
                         .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                // подпись с хэштегами — в буфер обмена, в TikTok останется вставить
+                JSONObject m = engine.api.loadClip(clipId);
+                String caption = m != null ? m.optString("caption") : "";
+                if (!caption.isEmpty()) {
+                    copy(caption);
+                    send.putExtra(Intent.EXTRA_TEXT, caption);
+                    Toast.makeText(MainActivity.this, "Подпись скопирована — вставьте её в TikTok", Toast.LENGTH_LONG).show();
+                }
                 startActivity(Intent.createChooser(send, "Поделиться клипом"));
             });
         }

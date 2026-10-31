@@ -80,6 +80,14 @@ public class AndroidPlatform implements Platform {
         return ctx.getSharedPreferences("picked_img", Context.MODE_PRIVATE);
     }
 
+    public static final String NIGHT = "_night"; // папка ночной нарезки
+
+    /** Папка ночной нарезки как «источник» для списка файлов (id файлов — «_night/имя»). */
+    JSONObject nightSource() throws JSONException {
+        JSONObject n = store.settings().optJSONObject("night");
+        return new JSONObject().put("id", NIGHT).put("folder_uri", n != null ? n.optString("folder_uri") : "");
+    }
+
     /** Картинка для баннера (кнопка «Выбрать картинку»). */
     public String registerImage(Uri uri) {
         String name = displayName(uri);
@@ -213,7 +221,11 @@ public class AndroidPlatform implements Platform {
         int slash = fileId.indexOf('/');
         if (slash <= 0) throw new ApiError(404, "Файл не найден");
         String sid = fileId.substring(0, slash);
-        if (sid.equals(IMAGES)) {
+        if (sid.equals(NIGHT)) {
+            listFiles(nightSource());
+            u = uriCache.get(fileId);
+            if (u == null) throw new ApiError(404, "Файл не найден в папке ночной нарезки");
+        } else if (sid.equals(IMAGES)) {
             String s = pickedImages().getString(fileId.substring(slash + 1), null);
             if (s == null) throw new ApiError(404, "Картинка не найдена");
             u = Uri.parse(s);

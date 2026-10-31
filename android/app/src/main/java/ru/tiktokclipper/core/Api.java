@@ -20,7 +20,7 @@ import java.util.Locale;
  * другие приложения на телефоне не смогут управлять нарезкой.
  */
 public class Api implements MiniHttp.Handler {
-    public static final String VERSION = "2.0.0-android";
+    public static final String VERSION = "2.1.0-android";
     public static final String COOKIE = "clipper_k";
 
     private final Store store;
@@ -104,7 +104,7 @@ public class Api implements MiniHttp.Handler {
                 JSONObject s = new JSONObject();
                 try {
                     for (String k : new String[]{"id", "created", "source_id", "source_title", "src", "start", "end",
-                            "filename", "version", "published", "warnings"}) s.put(k, m.opt(k));
+                            "filename", "version", "published", "warnings", "night", "caption"}) s.put(k, m.opt(k));
                     s.put("exists", platform.clipExists(m));
                 } catch (JSONException ignored) {
                 }
@@ -234,6 +234,24 @@ public class Api implements MiniHttp.Handler {
                     if (id > 0 && !ty.equals("tv") && !ty.equals("movie")) throw new ApiError(400, "Неверный тип");
                     store.updateSourceFields(b.optString("source_id"), id > 0 ? new JSONObject().put("tmdb_id", id).put("tmdb_type", ty)
                             : new JSONObject().put("tmdb_id", JSONObject.NULL).put("tmdb_type", JSONObject.NULL));
+                    return ok();
+                }
+                break;
+            }
+            case "night": {
+                java.io.File nf = new java.io.File(store.dir, "night.json");
+                if (seg.length == 1 && m.equals("GET")) {
+                    JSONObject st = Store.readObject(nf), n = store.settings().optJSONObject("night");
+                    JSONArray done = st.optJSONArray("done");
+                    return MiniHttp.Response.json(new JSONObject().put("settings", n != null ? n : new JSONObject())
+                            .put("last_run", st.opt("last_run")).put("last_files", st.optJSONArray("last_files"))
+                            .put("done_count", done != null ? done.length() : 0));
+                }
+                if (seg.length == 2 && seg[1].equals("reset") && m.equals("POST")) {
+                    JSONObject st = Store.readObject(nf);
+                    st.put("done", new JSONArray());
+                    st.remove("last_run");
+                    Store.writeJson(nf, st);
                     return ok();
                 }
                 break;
@@ -399,6 +417,21 @@ public class Api implements MiniHttp.Handler {
                 case "bitrate_mbps":
                     patch.put(k, Math.min(30, Math.max(2, b.optInt(k, 10))));
                     break;
+                case "template":
+                    patch.put(k, Template.clean(b.optJSONObject(k)));
+                    break;
+                case "night": {
+                    JSONObject n = b.optJSONObject(k);
+                    if (n == null) throw new ApiError(400, "Неверные настройки ночной нарезки");
+                    JSONObject cur = store.settings().optJSONObject("night");
+                    JSONObject o = cur != null ? new JSONObject(cur.toString()) : new JSONObject();
+                    if (n.has("enabled")) o.put("enabled", n.optBoolean("enabled"));
+                    if (n.has("folder_uri")) o.put("folder_uri", n.optString("folder_uri")).put("folder_name", n.optString("folder_name"));
+                    if (n.has("per_night")) o.put("per_night", Math.max(1, Math.min(10, n.optInt("per_night", 3))));
+                    if (o.optBoolean("enabled") && o.optString("folder_uri").isEmpty()) throw new ApiError(400, "Выберите папку для ночной нарезки");
+                    patch.put(k, o);
+                    break;
+                }
                 case "tmdb_key": {
                     String v = b.optString(k, "").trim();
                     if (v.length() > 600 || !v.matches("[A-Za-z0-9_\\-.]*")) throw new ApiError(400, "Ключ содержит лишние символы — скопируйте его заново");
@@ -410,8 +443,14 @@ public class Api implements MiniHttp.Handler {
                     break;
             }
         }
-        return maskSecrets(store.saveSettings(patch));
+        JSONObject saved = maskSecrets(store.saveSettings(patch));
+        Runnable hook = settingsChanged;
+        if (hook != null) hook.run();
+        return saved;
     }
+
+    /** Вызывается после сохранения настроек (на телефоне — перепланировать ночную нарезку). */
+    public volatile Runnable settingsChanged;
 
     /** План с состоянием клипов: в очереди / собирается / готов / ошибка. */
     JSONArray planView() throws JSONException {
@@ -597,7 +636,7 @@ public class Api implements MiniHttp.Handler {
         return MiniHttp.Response.json(o);
     }
 
-    static String fmt(double t) {
+    public static String fmt(double t) {
         int s = (int) t;
         return s >= 3600 ? String.format(Locale.ROOT, "%d:%02d:%02d", s / 3600, s % 3600 / 60, s % 60)
                 : String.format(Locale.ROOT, "%d:%02d", s / 60, s % 60);
@@ -629,6 +668,13 @@ public class Api implements MiniHttp.Handler {
                 title = "Пересборка: " + meta.optString("filename");
                 break;
             }
+            case "auto":
+                if (p.optString("file").isEmpty()) throw new ApiError(400, "Не выбрано видео");
+                title = "Быстрый клип: " + p.getString("file").substring(p.getString("file").lastIndexOf('/') + 1);
+                break;
+            case "night":
+                title = "Ночная нарезка";
+                break;
             case "plan": {
                 JSONObject src = store.getSource(p.optString("source_id"));
                 if (src == null) throw new ApiError(400, "Выберите источник");

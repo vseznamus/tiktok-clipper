@@ -190,14 +190,20 @@ final class VideoRenderer {
     private final FloatBuffer quad = ByteBuffer.allocateDirect(16 * 4).order(ByteOrder.nativeOrder()).asFloatBuffer();
     private int subTex = -1;
     private Subs.Event subEvent;
-    private Bitmap banner;
-    private int[] bannerRect;
-    private int bannerTex = -1;
+    private List<Bitmap> bannerFrames;
+    private double bannerFps;
+    private int[] bannerRect, plateRect;
+    private int bannerTex = -1, bannerIdx = -1, plateTex = -1;
 
-    /** Баннер-картинка поверх видео (под субтитрами, без зеркала). rect — {x, y, w, h} в кадре 1080×1920. */
-    VideoRenderer banner(Bitmap b, int[] rect) {
-        banner = b;
+    /**
+     * Баннер поверх видео (под субтитрами, без зеркала): одна картинка или кадры короткого видео по кругу (fps).
+     * rect — {x, y, w, h} в кадре 1080×1920; plate — тёмная подложка для читаемости или null.
+     */
+    VideoRenderer banner(List<Bitmap> frames, double fps, int[] rect, int[] plate) {
+        bannerFrames = frames;
+        bannerFps = fps;
         bannerRect = rect;
+        plateRect = plate;
         return this;
     }
     private int subTop, subH;
@@ -539,17 +545,37 @@ final class VideoRenderer {
         draw2d(fboTex[0], 0, 0, W, H, W, H, 0, 1, 1, 0, mirror, 0.88f, 0, 0);
         for (Draw d : plan.parts) drawVideo(d, W, H, mirror, 1f);
         // 3) баннер — без зеркала
-        if (banner != null) {
+        if (bannerFrames != null && !bannerFrames.isEmpty()) {
+            GLES20.glEnable(GLES20.GL_BLEND);
+            GLES20.glBlendFunc(GLES20.GL_ONE, GLES20.GL_ONE_MINUS_SRC_ALPHA);
+            if (plateRect != null) {
+                if (plateTex < 0) {
+                    // 1×1 чёрный с прозрачностью 55 % (предумноженный альфа-канал)
+                    Bitmap px = Bitmap.createBitmap(1, 1, Bitmap.Config.ARGB_8888);
+                    px.eraseColor(0x8C000000);
+                    int[] tx = new int[1];
+                    GLES20.glGenTextures(1, tx, 0);
+                    plateTex = tx[0];
+                    GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, plateTex);
+                    setTexParams();
+                    GLUtils.texImage2D(GLES20.GL_TEXTURE_2D, 0, px, 0);
+                    px.recycle();
+                }
+                draw2d(plateTex, plateRect[0], plateRect[1], plateRect[2], plateRect[3], W, H, 0, 0, 1, 1, false, 1f, 0, 0);
+            }
+            int n = bannerFrames.size();
+            int idx = n == 1 ? 0 : (int) (Math.max(0, t) * bannerFps) % n;
             if (bannerTex < 0) {
                 int[] tx = new int[1];
                 GLES20.glGenTextures(1, tx, 0);
                 bannerTex = tx[0];
+            }
+            if (idx != bannerIdx) {
                 GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, bannerTex);
                 setTexParams();
-                GLUtils.texImage2D(GLES20.GL_TEXTURE_2D, 0, banner, 0);
+                GLUtils.texImage2D(GLES20.GL_TEXTURE_2D, 0, bannerFrames.get(idx), 0);
+                bannerIdx = idx;
             }
-            GLES20.glEnable(GLES20.GL_BLEND);
-            GLES20.glBlendFunc(GLES20.GL_ONE, GLES20.GL_ONE_MINUS_SRC_ALPHA);
             draw2d(bannerTex, bannerRect[0], bannerRect[1], bannerRect[2], bannerRect[3], W, H, 0, 0, 1, 1, false, 1f, 0, 0);
             GLES20.glDisable(GLES20.GL_BLEND);
         }

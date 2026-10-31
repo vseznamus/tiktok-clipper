@@ -52,7 +52,8 @@ async function check(page, name, full = false) {
     await ctx.addInitScript(() => {
       window.__calls = [];
       window.AndroidApp = {
-        pickFolder: () => window.__calls.push("pickFolder"),
+        pickFolder: () => { window.__calls.push("pickFolder"); setTimeout(() => window.onFolderPicked({ uri: window.__nightDir, name: "breaking_bad" }), 50); },
+        copyText: (t) => window.__calls.push("copy:" + t),
         pickVideo: () => { window.__calls.push("pickVideo"); setTimeout(() => window.onVideoPicked("_picked/old_rip.mp4"), 50); },
         pickImage: () => { window.__calls.push("pickImage"); setTimeout(() => window.onImagePicked("_img/banner.png"), 50); },
         shareClip: (id) => window.__calls.push("share:" + id),
@@ -60,6 +61,7 @@ async function check(page, name, full = false) {
         version: () => "test",
       };
     });
+    await ctx.addInitScript((d) => { window.__nightDir = d; }, path.join(demo, "media/breaking_bad"));
     const page = await ctx.newPage();
     page.on("pageerror", (e) => report.errors.push("pageerror: " + e.message));
     page.on("console", (m) => { if (m.type() === "error") report.errors.push("console: " + m.text()); });
@@ -130,26 +132,66 @@ async function check(page, name, full = false) {
     await page.waitForSelector("#bnImg");
     await page.click('#bnPos button[data-v="bottom"]');
     await page.fill("#bnSize", "50"); await page.dispatchEvent("#bnSize", "input");
-    await page.waitForFunction(() => { const i = document.querySelector("#bnImg"); return i && i.style.width === "50%"; });
-    const top = await page.$eval("#bnImg", (i) => parseFloat(i.style.top));
-    if (Math.abs(top - (84 - 50 * 1080 * 0.5 / 1920)) > 0.5) fail("положение баннера в предпросмотре: " + top);
+    // ширина 50% безопасной зоны = 420 px из 1080; картинка 4×2 → высота 210; низ — на границе зоны (1440)
+    await page.waitForFunction(() => { const i = document.querySelector("#bnImg"); return i && Math.abs(parseFloat(i.style.width) - 38.89) < 0.1; });
+    const geo = await page.evaluate(() => ({ top: parseFloat(document.querySelector("#bnImg").style.top), sub: parseFloat(document.querySelector("#bnSub").style.top),
+      plate: document.querySelector("#bnPlate").checked }));
+    if (Math.abs(geo.top - 64.06) > 0.2) fail("положение баннера в предпросмотре: " + geo.top);
+    if (!(geo.sub < geo.top - 3)) fail("субтитры должны быть над баннером: " + JSON.stringify(geo));
+    if (!geo.plate) fail("подложка по умолчанию должна быть включена");
     await noJunk("«Клип» с видео");
     await check(page, "a06_klip_banner", true);
-    step("баннер: картинка из файлов, «Снизу», ширина 50% — предпросмотр совпадает с расчётом сборки");
+    step("баннер «Снизу», 50%: в безопасной зоне TikTok, субтитры поднялись над баннером, тёмная подложка включена");
+    await page.click("#bTpl");
+    await page.waitForFunction(() => { const t = document.querySelector("#toast"); return !t.hidden && t.innerText.includes("Шаблон сохранён"); });
+    step("«Сохранить как шаблон»: настройки и баннер запомнены для «Быстрого клипа» и ночной нарезки");
     await page.click("#bMake");
     await page.waitForSelector("#jobsBox .progress", { timeout: 15000 });
     const jobs = await page.evaluate(() => fetch("/api/jobs").then((r) => r.json()));
     const cj = jobs.find((j) => j.type === "clip");
-    if (!cj || cj.params.banner !== "_img/banner.png" || cj.params.banner_pos !== "bottom" || cj.params.banner_size !== 0.5) fail("параметры баннера: " + JSON.stringify(cj && cj.params));
+    if (!cj || cj.params.banner !== "_img/banner.png" || cj.params.banner_pos !== "bottom" || cj.params.banner_size !== 0.5 || cj.params.banner_plate !== true)
+      fail("параметры баннера: " + JSON.stringify(cj && cj.params));
     await check(page, "a07_klip_sobiraetsya");
     await page.waitForSelector("#bShare", { timeout: 120000 });
     step("«Сделать клип»: прогресс прямо на вкладке «Клип», баннер передан в сборку, по готовности открылся клип");
+    const cap = await page.innerText("#app");
+    if (!cap.includes("Подпись для TikTok") || !cap.includes("#фильм")) fail("подпись: " + cap.slice(0, 300));
+    await page.click("#bCap");
     await page.click("#bShare");
     await page.click("#bOpen");
     const calls = await page.evaluate(() => window.__calls);
-    if (!calls.some((c) => c.startsWith("share:")) || !calls.some((c) => c.startsWith("open:"))) fail("мост не вызван: " + calls);
+    if (!calls.some((c) => c.startsWith("share:")) || !calls.some((c) => c.startsWith("open:")) || !calls.some((c) => c.startsWith("copy:") && c.includes("#кино")))
+      fail("мост не вызван: " + calls);
     await check(page, "a08_gotovyi_klip", true);
-    step("«Поделиться» и «Открыть в галерее» вызывают системные окна Android");
+    step("готовый клип: подпись с хэштегами («Скопировать подпись»), «Поделиться», «Открыть в галерее»");
+
+    // «Быстрый клип»: лучший момент + шаблон (с баннером) одной кнопкой
+    await page.click('#nav a[data-tab="clip"]');
+    await page.waitForSelector("#bQuick");
+    await page.click("#bQuick");
+    await page.waitForSelector("#bShare", { timeout: 120000 });
+    const jobs2 = await page.evaluate(() => fetch("/api/jobs").then((r) => r.json()));
+    const auto = jobs2.find((j) => j.type === "auto" && j.status === "done");
+    const qc = auto && jobs2.find((j) => j.id === auto.result.clip_jobs[0]);
+    if (!qc || qc.params.banner_pos !== "bottom" || qc.params.banner_plate !== true) fail("быстрый клип не по шаблону: " + JSON.stringify(qc && qc.params));
+    step("«⚡ Быстрый клип»: одна кнопка → лучший момент → клип по шаблону (с баннером) → открылся готовый клип");
+
+    // ночная нарезка: папка, 2 клипа, «Нарезать сейчас»
+    await page.click('#nav a[data-tab="settings"]');
+    await page.waitForSelector("#ngPick");
+    await page.click("#ngPick");
+    await page.waitForFunction(() => document.querySelector("#ngFolder").textContent === "breaking_bad");
+    await page.check("#ngOn");
+    await page.fill("#ngN", "2");
+    await page.click("#ngSave");
+    await page.waitForFunction(() => { const t = document.querySelector("#toast"); return !t.hidden && t.innerText.includes("включена"); });
+    await check(page, "a10_nochnaya_narezka", true);
+    await page.click("#ngNow");
+    await page.waitForSelector("#jobsBox .progress", { timeout: 15000 });
+    await page.waitForFunction(() => document.querySelectorAll("#readyBox .item").length >= 4 && !document.querySelector("#jobsBox .progress"), null, { timeout: 180000 });
+    const ready = await page.innerText("#readyBox");
+    if ((ready.match(/нарезан ночью/g) || []).length !== 2) fail("ночные клипы: " + ready);
+    step("ночная нарезка: папка «breaking_bad», 2 клипа за раз → «Нарезать сейчас» → 2 клипа с пометкой 🌙 в «Готовых клипах»");
     await page.click('#nav a[data-tab="clip"]');
     await page.waitForSelector("#readyBox .item");
     await check(page, "a09_klip_gotovye", true);

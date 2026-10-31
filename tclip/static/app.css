@@ -151,4 +151,6 @@ details.card > summary { cursor: pointer; min-height: 32px; display: flex; align
 /* баннер: предпросмотр кадра 9:16 */
 .bnPrev { position: relative; width: 60%; margin: 0 auto; aspect-ratio: 9 / 16; background: #000; border-radius: 12px; overflow: hidden; }
 .bnPrev .bnFrame { position: absolute; left: 0; top: 50%; width: 100%; transform: translateY(-50%); }
-.bnPrev .bnImg { position: absolute; object-fit: fill; }
+.bnPrev .bnImg { position: absolute; object-fit: fill; border-radius: 2px; }
+.bnPrev .bnSub { position: absolute; left: 6%; right: 17%; transform: translateY(-50%); text-align: center; font-weight: 800; font-size: 11px;
+  color: #fff; text-shadow: 0 0 2px #000, 0 0 2px #000; letter-spacing: .5px; pointer-events: none; }

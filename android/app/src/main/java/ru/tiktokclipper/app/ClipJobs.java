@@ -2,6 +2,8 @@ package ru.tiktokclipper.app;
 
 import android.graphics.Typeface;
 import android.media.MediaMetadataRetriever;
+import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
 import android.net.Uri;
 
 import org.json.JSONArray;
@@ -143,7 +145,11 @@ final class ClipJobs {
             meta.put("banner", banner);
             meta.put("banner_pos", p.optString("banner_pos", "top"));
             meta.put("banner_size", Math.max(0.2, Math.min(1.0, p.optDouble("banner_size", 0.8))));
+            meta.put("banner_chroma", p.optBoolean("banner_chroma", false));
+            meta.put("banner_plate", p.optBoolean("banner_plate", false));
         }
+        if (p.optBoolean("night")) meta.put("night", true);
+        meta.put("caption", ru.tiktokclipper.core.Captions.make(file));
         meta.put("profile", prof);
         meta.put("words", Subs.wordsToJson(inClip));
         meta.put("lines", Subs.linesToJson(lines));
@@ -170,7 +176,16 @@ final class ClipJobs {
         List<Subs.Line> lines = Subs.linesFromJson(meta.optJSONArray("lines"));
         boolean hasSubs = meta.optBoolean("subtitles") && !lines.isEmpty();
         SubtitlePainter painter = new SubtitlePainter(font(), style);
-        List<Subs.Event> events = hasSubs ? Subs.events(lines, style, Subs.subCenterY(prof, eff), painter.measurer())
+        // баннер: кадры (картинка — один, видео — по кругу), положение в безопасной зоне, субтитры не перекрывает
+        BannerFrames bf = loadBanner(ctx, meta, lo);
+        int[] bRect = null;
+        String bPos = meta.optString("banner_pos", "top");
+        if (bf != null) {
+            Bitmap f0 = bf.frames.get(0);
+            bRect = ru.tiktokclipper.core.Banner.rect(bPos, meta.optDouble("banner_size", 0.8), f0.getWidth(), f0.getHeight());
+        }
+        double subY = ru.tiktokclipper.core.Banner.subCenter(bPos, bRect, Subs.subCenterY(prof, eff));
+        List<Subs.Event> events = hasSubs ? Subs.events(lines, style, subY, painter.measurer())
                 : new ArrayList<Subs.Event>();
         long startUs = (long) (meta.getDouble("start") * 1e6), endUs = (long) (meta.getDouble("end") * 1e6);
 
@@ -184,10 +199,8 @@ final class ClipJobs {
         File muxed = new File(work, "clip.mp4");
         int bitrate = e.store.settings().optInt("bitrate_mbps", 10) * 1000000;
         VideoRenderer vr = new VideoRenderer();
-        android.graphics.Bitmap bannerBmp = loadBanner(ctx, meta);
-        if (bannerBmp != null) {
-            vr.banner(bannerBmp, ru.tiktokclipper.core.Banner.rect(meta.optString("banner_pos", "top"), meta.optDouble("banner_size", 0.8),
-                    bannerBmp.getWidth(), bannerBmp.getHeight(), 1080, 1920));
+        if (bf != null) {
+            vr.banner(bf.frames, bf.fps, bRect, meta.optBoolean("banner_plate") ? ru.tiktokclipper.core.Banner.plate(bRect) : null);
         }
         VideoRenderer.Result r = vr.render(e.ctx, uri, sw, sh, info.optDouble("fps", 30), prof, eff,
                 meta.getBoolean("mirror"), events, painter, startUs, endUs, bitrate, audio, muxed, ctx.cancel,
@@ -291,6 +304,72 @@ final class ClipJobs {
         return analyze(ctx, p.getString("file"), length, 0, 1);
     }
 
+    /** «Быстрый клип»: лучший момент (или несколько) по автоподбору → клипы по шаблону. */
+    JSONObject auto(JobQueue.Ctx ctx) throws Exception {
+        JSONObject p = ctx.params;
+        String file = p.getString("file");
+        int count = Math.max(1, Math.min(5, p.optInt("count", 1)));
+        JSONObject settings = e.store.settings();
+        int length = settings.optInt("moment_len", 30);
+        JSONObject res = analyze(ctx, file, length, 0.02, 0.9);
+        java.util.List<JSONObject> best = ru.tiktokclipper.core.Template.best(res.optJSONArray("candidates"), count, Math.max(90, 3.0 * length));
+        if (best.isEmpty()) throw new ApiError(400, "Не нашлось ни одного момента — в видео нет звука");
+        ctx.progress(0.95, "Ставлю клипы в очередь");
+        JSONObject tpl = ru.tiktokclipper.core.Template.of(settings);
+        boolean srt = e.platform.sidecarSrt(file) != null;
+        JSONArray jobs = new JSONArray();
+        for (JSONObject c : best) {
+            JSONObject cp = ru.tiktokclipper.core.Template.clipParams(tpl, file, c.getDouble("start"), c.getDouble("end"), srt);
+            String name = file.substring(file.lastIndexOf('/') + 1);
+            jobs.put(e.queue.submit("clip", cp, "Клип: " + name + " (" + Api.fmt(c.getDouble("start")) + ")").getString("id"));
+        }
+        return new JSONObject().put("clip_jobs", jobs);
+    }
+
+    /** Ночная нарезка: следующие N файлов из выбранной папки → по лучшему моменту из каждого → клипы по шаблону. */
+    JSONObject night(JobQueue.Ctx ctx) throws Exception {
+        JSONObject settings = e.store.settings(), n = settings.optJSONObject("night");
+        if (n == null || n.optString("folder_uri").isEmpty()) throw new ApiError(400, "Папка для ночной нарезки не выбрана");
+        int per = Math.max(1, Math.min(10, n.optInt("per_night", 3)));
+        int length = settings.optInt("moment_len", 30);
+        ctx.progress(0.01, "Смотрю папку «" + n.optString("folder_name") + "»");
+        JSONArray files = e.platform.listFiles(e.platform.nightSource());
+        File stFile = new File(e.store.dir, "night.json");
+        JSONObject st = Store.readObject(stFile);
+        JSONArray done = st.optJSONArray("done");
+        if (done == null) done = new JSONArray();
+        java.util.List<String> todo = new java.util.ArrayList<>();
+        for (int i = 0; i < files.length() && todo.size() < per; i++) {
+            String path = files.getJSONObject(i).optString("path");
+            if (!Store.contains(done, path)) todo.add(path);
+        }
+        JSONObject tpl = ru.tiktokclipper.core.Template.of(settings);
+        JSONArray jobs = new JSONArray(), names = new JSONArray();
+        for (int i = 0; i < todo.size(); i++) {
+            ctx.check();
+            String file = todo.get(i), name = file.substring(file.indexOf('/') + 1);
+            double lo = 0.03 + 0.9 * i / todo.size(), hi = 0.03 + 0.9 * (i + 1) / todo.size();
+            ctx.progress(lo, "Ищу момент: " + name + " (" + (i + 1) + " из " + todo.size() + ")");
+            try {
+                JSONObject res = analyze(ctx, file, length, lo, hi);
+                java.util.List<JSONObject> best = ru.tiktokclipper.core.Template.best(res.optJSONArray("candidates"), 1, 0);
+                if (!best.isEmpty()) {
+                    JSONObject cp = ru.tiktokclipper.core.Template.clipParams(tpl, file, best.get(0).getDouble("start"), best.get(0).getDouble("end"),
+                            e.platform.sidecarSrt(file) != null).put("night", true);
+                    jobs.put(e.queue.submit("clip", cp, "Ночной клип: " + name).getString("id"));
+                    names.put(name);
+                }
+            } catch (ApiError err) {
+                ctx.warn(name + ": " + err.getMessage());
+            }
+            done.put(file);
+        }
+        st.put("done", done).put("last_run", java.time.LocalDate.now().toString()).put("last_jobs", jobs).put("last_files", names);
+        Store.writeJson(stFile, st);
+        if (todo.isEmpty()) ctx.warn("Новых видео в папке нет — всё уже нарезано.");
+        return new JSONObject().put("clip_jobs", jobs).put("files", names);
+    }
+
     /** Автоплан: N моментов на N дней (core/Planner). */
     JSONObject plan(JobQueue.Ctx ctx) throws Exception {
         return Planner.run(ctx, e.store, e.platform, api.tmdb, this::analyze, e.queue, java.time.LocalDate.now());
@@ -337,31 +416,90 @@ final class ClipJobs {
                 .put("candidates", Moments.find(levels, length, cues, cuts, 8)).put("speech", cues != null && !cues.isEmpty());
     }
 
-    /** Картинка баннера, уменьшенная до ширины кадра; null — без баннера (или файл недоступен — с предупреждением). */
-    android.graphics.Bitmap loadBanner(JobQueue.Ctx ctx, JSONObject meta) {
+    static final class BannerFrames {
+        final List<Bitmap> frames = new ArrayList<>();
+        double fps = 1;
+    }
+
+    static final int BANNER_MAX_W = 840, BANNER_MAX_FRAMES = 60;
+    static final double BANNER_MAX_SEC = 6;
+
+    /**
+     * Баннер: картинка — один кадр, видео (MP4 и др.) — до 60 кадров по кругу (до 6 с, 10–15 кадров/с, без звука).
+     * По желанию — «убрать зелёный фон». null — без баннера (если файл недоступен — с предупреждением).
+     */
+    BannerFrames loadBanner(JobQueue.Ctx ctx, JSONObject meta, double at) {
         String id = meta.optString("banner", "");
         if (id.isEmpty()) return null;
+        boolean chroma = meta.optBoolean("banner_chroma");
+        BannerFrames out = new BannerFrames();
         try {
             Uri u = e.platform.resolve(id);
-            android.graphics.BitmapFactory.Options o = new android.graphics.BitmapFactory.Options();
-            o.inJustDecodeBounds = true;
-            try (java.io.InputStream in = e.ctx.getContentResolver().openInputStream(u)) {
-                android.graphics.BitmapFactory.decodeStream(in, null, o);
+            String mime = e.ctx.getContentResolver().getType(u);
+            if (mime == null) mime = e.platform.mimeOf(id);
+            if (mime.startsWith("video/")) {
+                ctx.progress(at, "Готовлю видео-баннер");
+                MediaMetadataRetriever mr = new MediaMetadataRetriever();
+                try {
+                    mr.setDataSource(e.ctx, u);
+                    double dur = Math.max(0.1, Long.parseLong(mr.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)) / 1000.0);
+                    double len = Math.min(dur, BANNER_MAX_SEC);
+                    out.fps = Math.min(15, Math.max(1, BANNER_MAX_FRAMES / len));
+                    int n = Math.max(1, (int) Math.floor(len * out.fps));
+                    for (int i = 0; i < n; i++) {
+                        ctx.check();
+                        long us = (long) (i / out.fps * 1e6);
+                        Bitmap f = mr.getFrameAtTime(us, MediaMetadataRetriever.OPTION_CLOSEST);
+                        if (f == null) continue;
+                        out.frames.add(prepare(f, chroma));
+                    }
+                } finally {
+                    mr.release();
+                }
+            } else {
+                BitmapFactory.Options o = new BitmapFactory.Options();
+                o.inJustDecodeBounds = true;
+                try (java.io.InputStream in = e.ctx.getContentResolver().openInputStream(u)) {
+                    BitmapFactory.decodeStream(in, null, o);
+                }
+                int sample = 1;
+                while (o.outWidth / (sample * 2) >= BANNER_MAX_W) sample *= 2;
+                BitmapFactory.Options o2 = new BitmapFactory.Options();
+                o2.inSampleSize = sample;
+                Bitmap b;
+                try (java.io.InputStream in = e.ctx.getContentResolver().openInputStream(u)) {
+                    b = BitmapFactory.decodeStream(in, null, o2);
+                }
+                if (b != null) out.frames.add(prepare(b, chroma));
             }
-            int sample = 1;
-            while (o.outWidth / (sample * 2) >= 1080) sample *= 2;
-            android.graphics.BitmapFactory.Options o2 = new android.graphics.BitmapFactory.Options();
-            o2.inSampleSize = sample;
-            android.graphics.Bitmap b;
-            try (java.io.InputStream in = e.ctx.getContentResolver().openInputStream(u)) {
-                b = android.graphics.BitmapFactory.decodeStream(in, null, o2);
-            }
-            if (b == null) throw new java.io.IOException("не картинка");
-            return b;
+            if (out.frames.isEmpty()) throw new java.io.IOException("не картинка и не видео");
+            return out;
+        } catch (JobQueue.Cancelled c) {
+            throw new RuntimeException(c);
         } catch (Exception ex) {
             ctx.warn("Баннер не удалось открыть (" + ex.getMessage() + ") — клип собран без баннера.");
             return null;
         }
+    }
+
+    /** Уменьшить до ширины безопасной зоны и (по желанию) убрать зелёный фон. */
+    static Bitmap prepare(Bitmap src, boolean chroma) {
+        Bitmap b = src;
+        if (b.getWidth() > BANNER_MAX_W) {
+            b = Bitmap.createScaledBitmap(src, BANNER_MAX_W, Math.max(1, src.getHeight() * BANNER_MAX_W / src.getWidth()), true);
+            if (b != src) src.recycle();
+        }
+        if (chroma) {
+            Bitmap m = b.copy(Bitmap.Config.ARGB_8888, true);
+            if (m != b) b.recycle();
+            int[] px = new int[m.getWidth() * m.getHeight()];
+            m.getPixels(px, 0, m.getWidth(), 0, 0, m.getWidth(), m.getHeight());
+            ru.tiktokclipper.core.Chroma.key(px);
+            m.setHasAlpha(true);
+            m.setPixels(px, 0, m.getWidth(), 0, 0, m.getWidth(), m.getHeight());
+            b = m;
+        }
+        return b;
     }
 
     static double[] readDoubles(File f) throws JSONException {

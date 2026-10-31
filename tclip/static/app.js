@@ -234,8 +234,17 @@ async function viewClip(_arg, q) {
     const chosen = data.files.find((f) => f.path === dr.file) || picked;
     if (chosen) {
       box.innerHTML = `<label class="f">Файл</label><div class="row"><b class="grow wrap">${esc(chosen.name)}</b>
-        <button class="btn sm ghost" id="chgFile" style="width:auto">Другой файл</button></div>`;
+        <button class="btn sm ghost" id="chgFile" style="width:auto">Другой файл</button></div>
+        ${APP ? `<div style="height:10px"></div><button class="btn primary" id="bQuick">⚡ Быстрый клип</button>
+          <p class="muted small">Сам найдёт лучший момент и соберёт клип по шаблону. Или настройте всё вручную ниже.</p>` : ""}`;
       $("#chgFile").onclick = () => { dr.file = null; saveDraft(); $("#momentBox").innerHTML = ""; renderFiles(); };
+      const q = $("#bQuick");
+      if (q) q.onclick = async () => {
+        q.disabled = true;
+        const job = await api("/api/jobs", { method: "POST", body: { type: "auto", params: { file: dr.file, count: 1 } } }).catch(() => null);
+        if (!job) { q.disabled = false; return; }
+        S.watchAuto = job.id; toast("Ищу лучший момент и собираю клип — прогресс вверху"); appJobs(); window.scrollTo(0, 0);
+      };
       return;
     }
     box.innerHTML = `<label class="f">Файл</label>
@@ -288,13 +297,17 @@ async function viewClip(_arg, q) {
     box.innerHTML = `<p class="muted pad">Читаю видео…</p>`;
     const info = await api("/api/probe?file=" + encodeURIComponent(dr.file));
     const src = S.cfg.sources.find((s) => s.id === dr.source_id);
-    const prof = src ? src.full_profile : { layout: "single", mirror: true, subtitles: true, sub_style: "classic", language: "auto", cam_rect: null };
+    const prof = src ? src.full_profile : APP ? Object.assign({ layout: "single", cam_rect: null }, tplOf())
+      : { layout: "single", mirror: true, subtitles: true, sub_style: "classic", language: "auto", cam_rect: null };
     const dur = info.duration || 0;
     const mlen = Number(S.cfg.settings.moment_len) || 30;
     if (dr.start == null || dr.start > dur) dr.start = 0;
     if (dr.end == null || dr.end > dur || dr.end <= dr.start) dr.end = Math.min(dur, dr.start + mlen);
     for (const k of ["mirror", "subtitles", "sub_style", "language", "layout"]) if (dr[k] == null || dr.file !== dr.optsFor) dr[k] = prof[k];
-    if (dr.file !== dr.optsFor) dr.use_srt = false;
+    if (dr.file !== dr.optsFor) {
+      dr.use_srt = APP ? !!tplOf().use_srt : false;
+      if (APP) dr.banner = tplOf().banner ? Object.assign({}, tplOf().banner) : null;
+    }
     dr.optsFor = dr.file; saveDraft();
     const langs = [["auto", "Определить сам"], ["ru", "Русский"], ["en", "English"], ["uk", "Українська"], ["de", "Deutsch"], ["es", "Español"], ["fr", "Français"], ["it", "Italiano"], ["pt", "Português"], ["tr", "Türkçe"], ["ja", "日本語"], ["ko", "한국어"]];
     const styles = Object.entries(S.cfg.sub_styles);
@@ -321,6 +334,7 @@ async function viewClip(_arg, q) {
       <div id="momRes"></div></div>
     <div class="card">
       <h2>Настройки клипа</h2>
+      ${APP ? `<p class="muted small">Значения берутся из шаблона. «Сохранить как шаблон» — и «Быстрый клип» и ночная нарезка будут собирать так же (вместе с баннером).</p>` : ""}
       <label class="toggle"><span>Зеркало (отразить картинку)</span><input type="checkbox" id="oMirror" ${dr.mirror ? "checked" : ""}></label>
       <label class="toggle"><span>Субтитры</span><input type="checkbox" id="oSubs" ${dr.subtitles ? "checked" : ""}></label>
       <div id="subOpts">
@@ -334,6 +348,7 @@ async function viewClip(_arg, q) {
       <div id="camInfo" class="stack" style="margin-top:10px"></div>`}
     </div>
     ${APP ? bannerCard(dr) : ""}
+    ${APP ? `<button class="btn" id="bTpl">Сохранить как шаблон</button><div style="height:10px"></div>` : ""}
     <button class="btn primary" id="bMake">Сделать клип</button>`;
 
     const v = $("#pv"), img = $("#pimg");
@@ -426,12 +441,20 @@ async function viewClip(_arg, q) {
     $("#bMake").onclick = async () => {
       const params = { source_id: dr.source_id || null, file: dr.file, start: dr.start, end: dr.end, mirror: dr.mirror,
         subtitles: dr.subtitles, language: dr.language, sub_style: dr.sub_style, layout: dr.layout, sub_source: dr.use_srt ? "srt" : "asr" };
-      if (APP && dr.banner) Object.assign(params, { banner: dr.banner.path, banner_pos: dr.banner.pos, banner_size: dr.banner.size });
+      if (APP && dr.banner) Object.assign(params, { banner: dr.banner.path, banner_pos: dr.banner.pos, banner_size: dr.banner.size,
+        banner_chroma: !!dr.banner.chroma, banner_plate: !!dr.banner.plate });
       const job = await api("/api/jobs", { method: "POST", body: { type: "clip", params } });
       if (!APP) { toast("Клип добавлен в очередь"); refreshBadge(); go("#/queue"); return; }
       S.watchJob = job.id; toast("Собираю клип — прогресс вверху экрана"); appJobs(); window.scrollTo(0, 0);
     };
-    if (APP) bindBanner(dr);
+    if (APP) {
+      bindBanner(dr);
+      $("#bTpl").onclick = async () => {
+        const template = { mirror: dr.mirror, subtitles: dr.subtitles, sub_style: dr.sub_style, language: dr.language, use_srt: !!dr.use_srt, banner: dr.banner || null };
+        await api("/api/settings", { method: "PUT", body: { template } });
+        await loadCfg(true); toast("Шаблон сохранён: так будут собираться «Быстрый клип» и ночная нарезка");
+      };
+    }
   }
 }
 
@@ -619,6 +642,9 @@ async function viewClipView(id) {
     ${m.exists ? `<video class="clipvideo" id="cv" controls playsinline preload="metadata" src="${m.url}"></video>` : `<p class="err">Файл клипа удалён из галереи.</p>`}
     <p class="muted small wrap">Сохранён: ${esc(galleryName)}</p>
     ${(m.warnings || []).map((w) => `<p class="warn">⚠ ${esc(w)}</p>`).join("")}
+    ${APP && m.caption ? `<div class="card stack"><h2>Подпись для TikTok</h2><p class="small wrap" style="white-space:pre-line">${esc(m.caption)}</p>
+      <button class="btn sm" id="bCap">Скопировать подпись</button>
+      <p class="muted small">При «Поделиться» подпись копируется сама — в TikTok останется вставить.</p></div>` : ""}
     <button class="btn primary" id="bShare" ${m.exists ? "" : "disabled"}>Поделиться</button>
     <p class="muted small" id="shareNote"></p>
     <div class="grid2">${APP ? `<button class="btn" id="bOpen">Открыть в галерее</button>`
@@ -681,6 +707,8 @@ async function viewClipView(id) {
       }).catch(() => (note.textContent = "Не удалось подготовить файл. Используйте «Скачать»."));
     }
   }
+  const bCap = $("#bCap");
+  if (bCap) bCap.onclick = () => window.AndroidApp.copyText(m.caption);
   $("#bShare").onclick = async () => {
     if (APP) { window.AndroidApp.shareClip(m.id); return; }
     if (blobFile && navigator.canShare && navigator.canShare({ files: [blobFile] })) {
@@ -738,6 +766,7 @@ async function viewSettings() {
     <label class="f">Порядок типов</label><ul class="list" id="order"></ul>
     <button class="btn primary" id="bSched">Сохранить расписание</button></div>`}
 
+  ${APP ? `<div class="card stack" id="nightCard"><h2>Ночная нарезка</h2><p class="muted pad">Загружаю…</p></div>` : ""}
   ${APP ? keysCard(se) : ""}
   ${APP ? appAsrCard(st, se) : `  <div class="card"><h2>Распознавание речи</h2>
     <p class="small">faster-whisper: ${asr["faster-whisper"].ok ? '<span class="ok">установлен</span>' : `<span class="muted">${esc(asr["faster-whisper"].message)}</span>`}</p>
@@ -791,6 +820,7 @@ async function viewSettings() {
     if (parseHash().name !== "settings") return;
     if (fin.status === "done") { toast("Модель удалена"); viewSettings(); } else { b.disabled = false; toast(fin.error || "Не получилось"); }
   }));
+  if (APP) nightCard();
   const bKeys = $("#bKeys");
   if (bKeys) {
     const send = async (body, msg) => { await api("/api/settings", { method: "PUT", body }); await loadCfg(true); toast(msg); viewSettings(); };
@@ -1022,7 +1052,15 @@ async function appJobs() {
   if (!box) return;
   const jobs = await api("/api/jobs").catch(() => []);
   if (!box.isConnected) return;
-  const act = jobs.filter((j) => (j.type === "clip" || j.type === "rebuild") && (j.status === "queued" || j.status === "running"));
+  const act = jobs.filter((j) => ["clip", "rebuild", "auto", "night"].includes(j.type) && (j.status === "queued" || j.status === "running"));
+  if (S.actN !== undefined && act.length < S.actN) appReady(); // что-то достроилось — обновить «Готовые клипы»
+  S.actN = act.length;
+  const auto = S.watchAuto ? jobs.find((j) => j.id === S.watchAuto && (j.status === "done" || j.status === "error" || j.status === "canceled")) : null;
+  if (auto) {
+    S.watchAuto = null;
+    if (auto.status === "done" && auto.result && (auto.result.clip_jobs || []).length) S.watchJob = auto.result.clip_jobs[0];
+    else if (auto.status === "error") toast(auto.error || "Не получилось", true);
+  }
   const done = S.watchJob ? jobs.find((j) => j.id === S.watchJob && (j.status === "done" || j.status === "error" || j.status === "canceled")) : null;
   if (done) {
     S.watchJob = null;
@@ -1042,49 +1080,80 @@ async function appReady() {
   const clips = (await api("/api/clips").catch(() => [])).filter((c) => c.exists !== false).slice(0, 8);
   if (!box.isConnected) return;
   box.innerHTML = clips.length ? `<div class="card"><h2>Готовые клипы</h2><ul class="list">${clips.map((c) => `<li><a class="item" href="#/clipview/${encodeURIComponent(c.id)}">
-    <span class="t"><b class="wrap">${esc(c.filename)}</b><br><span class="muted small">${fmt(c.start, false)}–${fmt(c.end, false)} · ${esc((c.src || "").split("/").pop())}</span></span>
+    <span class="t"><b class="wrap">${c.night ? "🌙 " : ""}${esc(c.filename)}</b><br><span class="muted small">${c.night ? "нарезан ночью · " : ""}${fmt(c.start, false)}–${fmt(c.end, false)} · ${esc((c.src || "").split("/").pop())}</span></span>
     <span class="chev">›</span></a></li>`).join("")}</ul></div>` : "";
 }
 
-/** Баннер: картинка из файлов поверх клипа 1080×1920 (сверху / по центру / снизу, ширина в %). Расчёт как в core/Banner.java. */
+function tplOf() {
+  const t = Object.assign({ mirror: true, subtitles: true, sub_style: "classic", language: "auto", use_srt: true, banner: null },
+    (S.cfg && S.cfg.settings && S.cfg.settings.template) || {});
+  return t;
+}
+const isVideoPath = (p) => /\.(mp4|mov|webm|3gp|mkv|m4v)$/i.test(p || "");
+
+/** Баннер в кадре 1080×1920 — тот же расчёт, что в core/Banner.java (безопасная зона TikTok, не поверх субтитров). */
 function bannerBox(pos, size, ratio) {
-  let w = Math.max(0.2, Math.min(1, size)), h = (w * 1080 * ratio) / 1920;
-  if (h > 0.4) { h = 0.4; w = (h * 1920) / (1080 * ratio); }
-  const y = pos === "center" ? (1 - h) / 2 : pos === "bottom" ? 0.84 - h : 0.07;
-  return { left: ((1 - w) / 2) * 100, top: y * 100, width: w * 100, height: h * 100 };
+  const L = 60, R = 900, T = 220, B = 1440, VT = 656, GAP = 16, MAXH = 420;
+  let w = (R - L) * Math.max(0.2, Math.min(1, size)), h = w * ratio;
+  const maxH = pos === "center" || pos === "bottom" ? MAXH : Math.min(MAXH, VT - T - GAP);
+  if (h > maxH) { h = maxH; w = h / ratio; }
+  const y = pos === "center" ? 1920 * 0.48 - h / 2 : pos === "bottom" ? B - h : T + (VT - T - GAP - h) / 2;
+  const x = (L + R) / 2 - w / 2;
+  const sub = pos === "bottom" ? Math.min(0.68 * 1920, y - GAP - 120) : 0.68 * 1920;
+  return { left: (x / 1080) * 100, top: (y / 1920) * 100, width: (w / 1080) * 100, height: (h / 1920) * 100, sub: (sub / 1920) * 100 };
 }
 function bannerCard(dr) {
   const b = dr.banner;
+  const media = b && (isVideoPath(b.path) ? `<video class="bnImg" id="bnImg" src="${mediaUrl(b.path)}" autoplay loop muted playsinline></video>`
+    : `<img class="bnImg" id="bnImg" src="${mediaUrl(b.path)}" alt="Баннер">`);
   return `<div class="card stack" id="bnCard"><h2>Баннер</h2>
-    <p class="muted small">Картинка из файлов телефона поверх клипа: логотип, надпись, призыв подписаться. PNG с прозрачным фоном смотрится лучше всего.</p>
+    <p class="muted small">Картинка (PNG, JPG) или короткое видео (MP4) из файлов телефона: логотип, надпись, «подпишись».
+      Ставится в безопасную зону TikTok — не под кнопки и не поверх субтитров. Видео крутится по кругу без звука (до 6 секунд).</p>
     ${b ? `<div class="bnPrev" id="bnPrev"><img class="bnFrame" src="/api/frame?file=${encodeURIComponent(dr.file)}&t=${(dr.start || 0).toFixed(1)}&w=480" alt="">
-        <img class="bnImg" id="bnImg" src="${mediaUrl(b.path)}" alt="Баннер"></div>
-      <p class="small wrap">Картинка: <b>${esc(b.path.split("/").pop())}</b></p>
+        ${media}<div class="bnSub" id="bnSub">СУБТИТРЫ</div></div>
+      <p class="small wrap">Файл: <b>${esc(b.path.split("/").pop())}</b></p>
       <label class="f">Где</label>
       <div class="seg seg3" id="bnPos">${[["top", "Сверху"], ["center", "По центру"], ["bottom", "Снизу"]].map(([v, n]) => `<button data-v="${v}" class="${b.pos === v ? "on" : ""}">${n}</button>`).join("")}</div>
-      <label class="f" for="bnSize">Ширина: <span id="bnSizeV">${Math.round(b.size * 100)}</span>% кадра</label>
+      <label class="f" for="bnSize">Ширина: <span id="bnSizeV">${Math.round(b.size * 100)}</span>%</label>
       <input type="range" id="bnSize" min="20" max="100" step="5" value="${Math.round(b.size * 100)}">
-      <div class="grid2"><button class="btn sm" id="bnPick">Другая картинка</button><button class="btn sm ghost" id="bnDel">Убрать баннер</button></div>`
-      : `<button class="btn" id="bnPick">Выбрать картинку</button>`}</div>`;
+      <label class="toggle"><span>Тёмная подложка (лучше видно)</span><input type="checkbox" id="bnPlate" ${b.plate ? "checked" : ""}></label>
+      <label class="toggle"><span>Убрать зелёный фон</span><input type="checkbox" id="bnChroma" ${b.chroma ? "checked" : ""}></label>
+      <p class="muted small">«Убрать зелёный фон» — для анимаций на зелёном фоне (хромакей). В клипе фон станет прозрачным.</p>
+      <div class="grid2"><button class="btn sm" id="bnPick">Другой файл</button><button class="btn sm ghost" id="bnDel">Убрать баннер</button></div>`
+      : `<button class="btn" id="bnPick">Выбрать картинку или видео</button>`}</div>`;
 }
 function bindBanner(dr) {
   const card = $("#bnCard");
   if (!card) return;
   const redraw = () => { card.outerHTML = bannerCard(dr); bindBanner(dr); };
   const place = () => {
-    const img = $("#bnImg"), b = dr.banner;
-    if (!img || !b || !img.naturalWidth) return;
-    const r = bannerBox(b.pos, b.size, img.naturalHeight / img.naturalWidth);
-    Object.assign(img.style, { left: r.left + "%", top: r.top + "%", width: r.width + "%", height: r.height + "%" });
+    const el = $("#bnImg"), b = dr.banner;
+    if (!el || !b) return;
+    const nw = el.naturalWidth || el.videoWidth, nh = el.naturalHeight || el.videoHeight;
+    if (!nw) return;
+    const r = bannerBox(b.pos, b.size, nh / nw), prev = $("#bnPrev");
+    Object.assign(el.style, { left: r.left + "%", top: r.top + "%", width: r.width + "%", height: r.height + "%",
+      boxShadow: b.plate ? `0 0 0 ${Math.round((14 / 1080) * prev.clientWidth)}px rgba(0,0,0,.55)` : "none",
+      background: b.plate ? "rgba(0,0,0,.55)" : "transparent" });
+    $("#bnSub").style.top = r.sub + "%";
   };
-  window.onImagePicked = (path) => { dr.banner = { path, pos: (dr.banner || {}).pos || "top", size: (dr.banner || {}).size || 0.8 }; saveDraft(); redraw(); };
+  window.onImagePicked = (path) => {
+    const old = dr.banner || {};
+    dr.banner = { path, pos: old.pos || "top", size: old.size || 0.8, plate: old.plate !== undefined ? old.plate : true, chroma: !!old.chroma };
+    saveDraft(); redraw();
+  };
   $("#bnPick").onclick = () => window.AndroidApp.pickImage();
   const del = $("#bnDel"); if (del) del.onclick = () => { dr.banner = null; saveDraft(); redraw(); };
   $$("#bnPos button").forEach((x) => (x.onclick = () => { dr.banner.pos = x.dataset.v; saveDraft(); $$("#bnPos button").forEach((y) => y.classList.toggle("on", y === x)); place(); }));
   const sz = $("#bnSize");
   if (sz) sz.oninput = () => { dr.banner.size = +sz.value / 100; $("#bnSizeV").textContent = sz.value; saveDraft(); place(); };
-  const img = $("#bnImg");
-  if (img) { if (img.complete) place(); else img.onload = place; }
+  const pl = $("#bnPlate"); if (pl) pl.onchange = () => { dr.banner.plate = pl.checked; saveDraft(); place(); };
+  const ch = $("#bnChroma"); if (ch) ch.onchange = () => { dr.banner.chroma = ch.checked; saveDraft(); };
+  const el = $("#bnImg");
+  if (el) {
+    if (el.tagName === "VIDEO") { if (el.readyState >= 1) place(); else el.onloadedmetadata = place; }
+    else if (el.complete) place(); else el.onload = place;
+  }
 }
 
 // ------------------------------------------------------------------ «Подборка»: мир и Россия, сериалы и фильмы
@@ -1139,6 +1208,43 @@ async function viewPick(_arg, q) {
   };
   S.pickPoll = false;
   load();
+}
+
+/** Ночная нарезка: папка, сколько клипов за ночь, состояние, «Нарезать сейчас». */
+async function nightCard() {
+  const card = $("#nightCard");
+  if (!card) return;
+  const d = await api("/api/night").catch(() => null);
+  if (!d || !card.isConnected) return;
+  const n = d.settings || {};
+  card.innerHTML = `<h2>Ночная нарезка</h2>
+    <p class="muted small">Ночью, когда телефон на зарядке и им не пользуются, приложение берёт следующие видео из папки,
+      находит в каждом лучший момент и собирает клипы по шаблону. Утром — уведомление, клипы в «Клип» → «Готовые клипы».</p>
+    <label class="toggle"><span>Включена</span><input type="checkbox" id="ngOn" ${n.enabled ? "checked" : ""}></label>
+    <p class="wrap">Папка: <b id="ngFolder">${esc(n.folder_name || "не выбрана")}</b></p>
+    <button class="btn" id="ngPick">Выбрать папку на телефоне</button>
+    <label class="f" for="ngN">Клипов за ночь</label><input type="number" id="ngN" min="1" max="10" value="${n.per_night || 3}">
+    <p class="muted small">${d.last_run ? `Последний раз: ${fmtDate(d.last_run)}${(d.last_files || []).length ? " — " + esc(d.last_files.join(", ")) : ""}. ` : ""}Уже нарезано видео из папки: ${d.done_count}.</p>
+    <button class="btn primary" id="ngSave">Сохранить</button>
+    <div class="grid2"><button class="btn sm" id="ngNow">Нарезать сейчас</button><button class="btn sm ghost" id="ngReset">Начать папку заново</button></div>`;
+  const folder = { uri: n.folder_uri || "", name: n.folder_name || "" };
+  window.onFolderPicked = (o) => { folder.uri = o.uri; folder.name = o.name; $("#ngFolder").textContent = o.name; };
+  $("#ngPick").onclick = () => window.AndroidApp.pickFolder();
+  $("#ngSave").onclick = async () => {
+    if ($("#ngOn").checked && !folder.uri) { toast("Выберите папку", true); return; }
+    await api("/api/settings", { method: "PUT", body: { night: { enabled: $("#ngOn").checked, folder_uri: folder.uri, folder_name: folder.name, per_night: +$("#ngN").value || 3 } } });
+    toast($("#ngOn").checked ? "Ночная нарезка включена" : "Ночная нарезка выключена"); nightCard();
+  };
+  $("#ngNow").onclick = async () => {
+    if (!folder.uri) { toast("Сначала выберите папку и сохраните", true); return; }
+    await api("/api/settings", { method: "PUT", body: { night: { enabled: $("#ngOn").checked, folder_uri: folder.uri, folder_name: folder.name, per_night: +$("#ngN").value || 3 } } });
+    await api("/api/jobs", { method: "POST", body: { type: "night", params: {} } });
+    toast("Нарезаю — прогресс на вкладке «Клип»"); go("#/clip");
+  };
+  $("#ngReset").onclick = async () => {
+    if (!confirm("Начать папку заново? Следующая нарезка возьмёт видео с начала папки.")) return;
+    await api("/api/night/reset", { method: "POST" }); toast("Папка начнётся заново"); nightCard();
+  };
 }
 
 function appAsrCard(st, se) {

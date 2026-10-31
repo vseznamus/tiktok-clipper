@@ -35,6 +35,37 @@ public class DesktopServer {
             try { Thread.sleep(1500); } catch (InterruptedException ignored) { }
             return new ByteArrayInputStream(bo.toByteArray());
         }));
+        // «Быстрый клип» и ночная нарезка — та же логика, что в ClipJobs (поиск моментов здесь — ffmpeg)
+        h.put("auto", ctx -> {
+            String file = ctx.params.getString("file");
+            int len = store.settings().optInt("moment_len", 30);
+            JSONObject res = pf.analyze(ctx, file, len, 0.05, 0.9);
+            List<JSONObject> best = Template.best(res.optJSONArray("candidates"), Math.max(1, ctx.params.optInt("count", 1)), 90);
+            JSONArray jobs = new JSONArray();
+            for (JSONObject c : best) jobs.put(qa[0].submit("clip", Template.clipParams(Template.of(store.settings()), file,
+                    c.getDouble("start"), c.getDouble("end"), pf.sidecarSrt(file) != null), "Клип").getString("id"));
+            return new JSONObject().put("clip_jobs", jobs);
+        });
+        h.put("night", ctx -> {
+            JSONObject n = store.settings().optJSONObject("night");
+            JSONArray files = pf.listFiles(new JSONObject().put("id", "_night").put("folder_uri", n.optString("folder_uri")));
+            File stf = new File(store.dir, "night.json");
+            JSONObject st = Store.readObject(stf);
+            JSONArray done = st.optJSONArray("done") != null ? st.getJSONArray("done") : new JSONArray();
+            JSONArray jobs = new JSONArray(), names = new JSONArray();
+            for (int i = 0; i < files.length() && jobs.length() < n.optInt("per_night", 3); i++) {
+                String f = files.getJSONObject(i).getString("path");
+                if (Store.contains(done, f)) continue;
+                JSONObject res = pf.analyze(ctx, f, store.settings().optInt("moment_len", 30), 0.1, 0.9);
+                JSONObject c = res.getJSONArray("candidates").getJSONObject(0);
+                jobs.put(qa[0].submit("clip", Template.clipParams(Template.of(store.settings()), f, c.getDouble("start"), c.getDouble("end"), false)
+                        .put("night", true), "Ночной клип").getString("id"));
+                names.put(f.substring(f.indexOf('/') + 1));
+                done.put(f);
+            }
+            Store.writeJson(stf, st.put("done", done).put("last_run", java.time.LocalDate.now().toString()).put("last_files", names));
+            return new JSONObject().put("clip_jobs", jobs).put("files", names);
+        });
         h.put("plan", ctx -> Planner.run(ctx, store, pf, api[0].tmdb, pf::analyze, qa[0], java.time.LocalDate.now()));
         h.put("model", pf::model);
         JobQueue q = new JobQueue(store.jobsFile(), h);
@@ -98,7 +129,9 @@ public class DesktopServer {
             int i = id.indexOf('/');
             if (i <= 0) throw new ApiError(404, "Файл не найден");
             String sid = id.substring(0, i), name = id.substring(i + 1);
-            File dir = sid.equals("_picked") || sid.equals("_img") ? picked : new File(store.getSource(sid).optString("folder_uri"));
+            File dir = sid.equals("_picked") || sid.equals("_img") ? picked
+                    : sid.equals("_night") ? new File(store.settings().optJSONObject("night").optString("folder_uri"))
+                    : new File(store.getSource(sid).optString("folder_uri"));
             File f = new File(dir, name);
             if (!f.isFile() || name.contains("..")) throw new ApiError(404, "Файл не найден");
             return f;
@@ -238,7 +271,9 @@ public class DesktopServer {
                     .put("start", s).put("end", e).put("mirror", p.optBoolean("mirror", true)).put("subtitles", true)
                     .put("sub_style", "classic").put("lines", Subs.linesToJson(lines)).put("version", 0).put("published", false)
                     .put("filename", "2026-10-30_120000_clip.mp4").put("gallery_path", "Movies/TikTokClips/2026-10-30_120000_clip.mp4")
-                    .put("media_uri", "content://media/external/video/media/1");
+                    .put("media_uri", "content://media/external/video/media/1").put("caption", Captions.make(file));
+            if (p.optBoolean("night")) meta.put("night", true);
+            for (String k : new String[]{"banner", "banner_pos", "banner_size", "banner_chroma", "banner_plate"}) if (p.has(k)) meta.put(k, p.get(k));
             ctx.progress(0.5, "Собираю видео");
             render(src, s, e, clipFile(meta));
             meta.put("warnings", ctx.warnings());
