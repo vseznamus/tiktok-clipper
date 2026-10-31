@@ -57,7 +57,7 @@ public class MainActivity extends Activity {
                 Uri u = req.getUrl();
                 if ("127.0.0.1".equals(u.getHost())) return false;
                 try {
-                    startActivity(new Intent(Intent.ACTION_VIEW, u)); // ссылки на YouTube — во внешнем приложении
+                    startActivity(new Intent(Intent.ACTION_VIEW, u)); // внешние ссылки (TMDB) — в браузере
                 } catch (ActivityNotFoundException ignored) {
                 }
                 return true;

@@ -18,14 +18,14 @@ import java.util.UUID;
 /**
  * Автоплан: N моментов на N дней (по одному в день) из одного источника.
  * Сериал — лучшие по рейтингу TMDB серии, которые есть в папке (без TMDB — следующие по порядку), по моменту из серии.
- * Фильм — N лучших моментов фильма, далеко друг от друга. Стрим/блогер — свежие записи (по чату, если он есть, иначе по звуку).
- * Моменты оцениваются офлайн: громкость, речь и эмоции в репликах (.srt), смены планов, всплески чата.
+ * Фильм — N лучших моментов фильма, далеко друг от друга.
+ * Моменты оцениваются офлайн: громкость, речь и эмоции в репликах (.srt), смены планов.
  */
 public final class Planner {
     private Planner() {
     }
 
-    /** Поиск моментов в файле (на телефоне — звук/чат/опорные кадры). Возвращает {candidates:[{start,end,score,reasons}], source}. */
+    /** Поиск моментов в файле (на телефоне — звук, реплики, опорные кадры). Возвращает {candidates:[{start,end,score,reasons}]}. */
     public interface Analyzer {
         JSONObject analyze(JobQueue.Ctx ctx, String file, int length, double lo, double hi) throws Exception;
     }
@@ -100,16 +100,13 @@ public final class Planner {
         }
         List<JSONObject> rest = new ArrayList<>();
         for (int i = 0; i < files.length(); i++) rest.add(files.getJSONObject(i));
-        if (type.equals("stream") || type.equals("blogger")) {
-            Collections.sort(rest, (a, b) -> Double.compare(b.optDouble("mtime"), a.optDouble("mtime")));
-        }
         for (boolean wantUsed : new boolean[]{false, true}) {
             for (JSONObject f : rest) {
                 String path = f.optString("path");
                 if (f.optBoolean("used") != wantUsed || order.contains(path)) continue;
                 order.add(path);
                 why.put(path, wantUsed ? "уже использован раньше" : type.equals("series") ? "следующая серия по порядку"
-                        : type.equals("movie") ? "фильм" : "свежая запись");
+                        : "фильм");
             }
         }
         int nFiles = type.equals("movie") ? 1 : Math.min(count, order.size());
@@ -125,7 +122,7 @@ public final class Planner {
             ctx.progress(lo, "Ищу моменты: " + name + " (" + (i + 1) + " из " + nFiles + ")");
             JSONObject r = an.analyze(ctx, chosen.get(i), length, lo, hi);
             cands.add(r.optJSONArray("candidates") != null ? r.getJSONArray("candidates") : new JSONArray());
-            how.add("chat".equals(r.optString("source")) ? "по чату" : "по звуку и репликам");
+            how.add("по звуку и репликам");
         }
 
         // по кругу: лучший момент каждого файла, потом вторые и т. д.; внутри файла — подальше друг от друга
@@ -156,7 +153,7 @@ public final class Planner {
             }
             if (!any) break;
         }
-        if (picked.isEmpty()) throw new ApiError(400, "Не нашлось ни одного момента — в файлах нет звука или чата");
+        if (picked.isEmpty()) throw new ApiError(400, "Не нашлось ни одного момента — в файлах нет звука");
         if (picked.size() < count) ctx.warn("Нашлось только " + picked.size() + " из " + count + " моментов.");
 
         ctx.progress(0.92, "Составляю план");

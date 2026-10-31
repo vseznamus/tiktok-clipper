@@ -20,7 +20,7 @@ import java.util.List;
  * Тот же формат, что и у Python-версии (sources.json, state.json, settings.json).
  */
 public class Store {
-    public static final List<String> SOURCE_TYPES = Arrays.asList("series", "movie", "stream", "blogger");
+    public static final List<String> SOURCE_TYPES = Arrays.asList("series", "movie");
     private static final Object LOCK = new Object();
     public final File dir;
 
@@ -156,11 +156,6 @@ public class Store {
     public static JSONObject fullProfile(JSONObject source) {
         JSONObject p = defaultProfile();
         if (source == null) return p;
-        String t = source.optString("type");
-        try {
-            if (t.equals("stream") || t.equals("blogger")) p.put("layout", "split");
-        } catch (JSONException ignored) {
-        }
         JSONObject own = source.optJSONObject("profile");
         if (own != null) {
             for (Iterator<String> it = own.keys(); it.hasNext(); ) {
@@ -226,7 +221,13 @@ public class Store {
                 }
                 for (String t : SOURCE_TYPES) if (!contains(clean, t)) clean.put(t);
                 cfg.put("type_order", clean);
-                if (cfg.optJSONArray("sources") == null) cfg.put("sources", new JSONArray());
+                // остались только сериалы и фильмы: источники других типов (стримы, блоги) убираются
+                JSONArray all = cfg.optJSONArray("sources"), kept = new JSONArray();
+                for (int i = 0; all != null && i < all.length(); i++) {
+                    JSONObject s = all.optJSONObject(i);
+                    if (s != null && SOURCE_TYPES.contains(s.optString("type"))) kept.put(s);
+                }
+                cfg.put("sources", kept);
             } catch (JSONException e) {
                 throw new RuntimeException(e);
             }

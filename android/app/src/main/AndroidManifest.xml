@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
-    <!-- скачивание модели распознавания и свежие видео с YouTube -->
+    <!-- скачивание модели распознавания и рейтинги TMDB -->
     <uses-permission android:name="android.permission.INTERNET" />
     <!-- работа в фоне с уведомлением о прогрессе, без засыпания процессора -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />

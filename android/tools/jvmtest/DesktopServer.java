@@ -38,25 +38,10 @@ public class DesktopServer {
         Thread.currentThread().join();
     }
 
-    /** Имитация Twitch и YouTube для вкладки «Моменты» (в тесте нет интернета и ключей). */
-    static Discover.Resp fakeNet(String url, Map<String, String> h, String body) {
+    /** Имитация TMDB для вкладки «Моменты» (в тесте нет интернета и ключа). */
+    static Net.Resp fakeNet(String url, Map<String, String> h, String body) {
         String j;
-        if (url.contains("id.twitch.tv")) j = "{\"access_token\":\"t\",\"expires_in\":3600}";
-        else if (url.contains("/helix/users")) j = "{\"data\":[{\"id\":\"7\",\"display_name\":\"Vasya_Live\"}]}";
-        else if (url.contains("/helix/videos")) j = "{\"data\":[{\"id\":\"900\",\"title\":\"Проходим хоррор до утра\",\"created_at\":\"2026-10-28T19:00:00Z\","
-                + "\"duration\":\"4h12m5s\",\"url\":\"https://www.twitch.tv/videos/900\",\"view_count\":15400}]}";
-        else if (url.contains("/helix/clips")) j = "{\"data\":["
-                + "{\"video_id\":\"900\",\"vod_offset\":12,\"duration\":28,\"view_count\":8200,\"title\":\"Вася испугался скримера\",\"url\":\"https://clips.twitch.tv/a\"},"
-                + "{\"video_id\":\"900\",\"vod_offset\":20,\"duration\":30,\"view_count\":1300,\"title\":\"АААААА\",\"url\":\"https://clips.twitch.tv/b\"},"
-                + "{\"video_id\":\"900\",\"vod_offset\":7340,\"duration\":25,\"view_count\":2100,\"title\":\"Пасхалка в подвале\",\"url\":\"https://clips.twitch.tv/c\"}],\"pagination\":{}}";
-        else if (url.contains("/playlistItems")) j = "{\"items\":[{\"contentDetails\":{\"videoId\":\"vid00000001\"}},{\"contentDetails\":{\"videoId\":\"vid00000002\"}}]}";
-        else if (url.contains("/youtube/v3/videos")) j = "{\"items\":["
-                + "{\"id\":\"vid00000001\",\"snippet\":{\"title\":\"Ночной стрим: отвечаю на вопросы\",\"publishedAt\":\"2026-10-28T22:00:00Z\"},"
-                + "\"contentDetails\":{\"duration\":\"PT2H5M\"},\"statistics\":{\"viewCount\":\"48200\",\"commentCount\":\"612\"},"
-                + "\"liveStreamingDetails\":{\"actualStartTime\":\"2026-10-28T19:00:00Z\",\"actualEndTime\":\"2026-10-28T21:05:00Z\"}},"
-                + "{\"id\":\"vid00000002\",\"snippet\":{\"title\":\"Обзор новой игры\",\"publishedAt\":\"2026-10-27T12:00:00Z\"},"
-                + "\"contentDetails\":{\"duration\":\"PT18M40S\"},\"statistics\":{\"viewCount\":\"120000\",\"commentCount\":\"950\"}}]}";
-        else if (url.contains("api.themoviedb.org")) {
+        if (url.contains("api.themoviedb.org")) {
             if (url.contains("/trending/")) j = "{\"results\":[{\"id\":1396,\"media_type\":\"tv\",\"name\":\"Во все тяжкие\",\"original_name\":\"Breaking Bad\",\"first_air_date\":\"2008-01-20\",\"vote_average\":8.9,\"vote_count\":15000},"
                     + "{\"id\":603,\"media_type\":\"movie\",\"title\":\"Матрица\",\"release_date\":\"1999-03-31\",\"vote_average\":8.2,\"vote_count\":26000}]}";
             else if (url.contains("/top_rated")) j = "{\"results\":[{\"id\":1396,\"name\":\"Во все тяжкие\",\"title\":\"Во все тяжкие\",\"vote_average\":8.9}]}";
@@ -64,18 +49,9 @@ public class DesktopServer {
             else if (url.contains("/tv/1396/season/1")) j = "{\"episodes\":[{\"episode_number\":1,\"name\":\"Пилот\",\"vote_average\":7.5,\"vote_count\":50},"
                     + "{\"episode_number\":2,\"name\":\"Кот в мешке\",\"vote_average\":9.0,\"vote_count\":50},{\"episode_number\":3,\"name\":\"…и мешок в реке\",\"vote_average\":8.0,\"vote_count\":50}]}";
             else if (url.contains("/tv/1396")) j = "{\"name\":\"Во все тяжкие\",\"first_air_date\":\"2008-01-20\",\"vote_average\":8.9,\"vote_count\":15000,\"seasons\":[{\"season_number\":1}]}";
-            else return new Discover.Resp(404, "{}");
-        } else if (url.contains("/commentThreads")) {
-            String[][] cs = {{"0:15 я упал со стула 😂", "240"}, {"0:17 ахахах", "31"}, {"1:02:03 вот это поворот", "12"}, {"лучший стрим", "5"}};
-            StringBuilder b = new StringBuilder("{\"items\":[");
-            for (int i = 0; i < cs.length; i++) {
-                if (i > 0) b.append(',');
-                b.append("{\"snippet\":{\"topLevelComment\":{\"snippet\":{\"textDisplay\":").append(JSONObject.quote(cs[i][0]))
-                        .append(",\"likeCount\":").append(cs[i][1]).append("}}}}");
-            }
-            j = b.append("]}").toString();
-        } else return new Discover.Resp(404, "{}");
-        return new Discover.Resp(200, j);
+            else return new Net.Resp(404, "{}");
+        } else return new Net.Resp(404, "{}");
+        return new Net.Resp(200, j);
     }
 
     static String sh(String... cmd) throws Exception {
@@ -114,7 +90,6 @@ public class DesktopServer {
                 if (!f.getName().matches("(?i).*\\.(mp4|mkv|mov|webm)$")) continue;
                 JSONObject o = new JSONObject().put("name", f.getName()).put("path", (src == null ? "_picked" : src.getString("id")) + "/" + f.getName())
                         .put("size", f.length()).put("mtime", f.lastModified() / 1000.0);
-                if (chatFile(f) != null) o.put("chat", true);
                 out.put(o);
             }
             return out;
@@ -153,16 +128,7 @@ public class DesktopServer {
                 if (s.getString("codec_type").equals("audio")) o.put("has_audio", true);
             }
             o.put("has_srt", sidecarSrt(id) != null);
-            o.put("has_chat", chatFile(f) != null);
             return o;
-        }
-
-        static File chatFile(File video) {
-            String n = video.getName(), stem = n.contains(".") ? n.substring(0, n.lastIndexOf('.')) : n;
-            File[] fs = video.getParentFile().listFiles();
-            if (fs == null) return null;
-            for (File c : fs) if (ChatMoments.isChatFor(c.getName(), stem)) return c;
-            return null;
         }
 
         public byte[] frameJpeg(String id, double t, int w) throws Exception {
@@ -225,7 +191,6 @@ public class DesktopServer {
         public MiniHttp.RangeSource openClip(JSONObject m) { return fileSource(clipFile(m)); }
         public boolean clipExists(JSONObject m) { return clipFile(m).isFile(); }
         public void deleteClip(JSONObject m) { clipFile(m).delete(); }
-        public JSONObject feed(JSONObject s) { return new JSONObject(); }
 
         public byte[] asset(String p) {
             File f = new File("app/src/main/assets/web/" + p);
@@ -281,14 +246,6 @@ public class DesktopServer {
         JSONObject analyze(JobQueue.Ctx ctx, String fileId, int length, double lo, double hi) throws Exception {
             ctx.params.put("file", fileId).put("length", length);
             File f = resolve(ctx.params.getString("file"));
-            File chatF = chatFile(f);
-            if (chatF != null) {
-                ChatMoments.Chat chat;
-                try (InputStream in = new FileInputStream(chatF)) { chat = ChatMoments.read(in); }
-                double dur = probe(ctx.params.getString("file")).getDouble("duration");
-                return new JSONObject().put("file", ctx.params.getString("file")).put("length", ctx.params.optInt("length", 10)).put("source", "chat")
-                        .put("chat_messages", chat.n).put("candidates", ChatMoments.find(chat, dur, ctx.params.optInt("length", 10), 8)).put("speech", true);
-            }
             String out = sh("ffmpeg", "-hide_banner", "-nostdin", "-i", f.getPath(), "-vn", "-af",
                     "aresample=8000,asetnsamples=n=8000:p=0,astats=metadata=1:reset=1,ametadata=mode=print:key=lavfi.astats.Overall.RMS_level:file=-",
                     "-f", "null", "-");

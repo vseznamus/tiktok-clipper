@@ -20,7 +20,7 @@ import java.util.Locale;
  * другие приложения на телефоне не смогут управлять нарезкой.
  */
 public class Api implements MiniHttp.Handler {
-    public static final String VERSION = "1.4.0-android";
+    public static final String VERSION = "1.5.0-android";
     public static final String COOKIE = "clipper_k";
 
     private final Store store;
@@ -33,20 +33,18 @@ public class Api implements MiniHttp.Handler {
         this(store, platform, queue, token, null);
     }
 
-    public Api(Store store, Platform platform, JobQueue queue, String token, Discover.Http http) {
+    public Api(Store store, Platform platform, JobQueue queue, String token, Net.Http http) {
         this.store = store;
         this.platform = platform;
         this.queue = queue;
         this.token = token;
-        this.discover = new Discover(store, http);
         this.tmdb = new Tmdb(store, http);
     }
 
-    final Discover discover;
     public final Tmdb tmdb;
 
     /** Ключи сервисов не отдаются в интерфейс целиком — только последние 4 символа. */
-    static final String[] SECRET_KEYS = {"twitch_client_id", "twitch_client_secret", "youtube_api_key", "tmdb_key"};
+    static final String[] SECRET_KEYS = {"tmdb_key"};
 
     static JSONObject maskSecrets(JSONObject s) throws JSONException {
         for (String k : SECRET_KEYS) {
@@ -234,27 +232,6 @@ public class Api implements MiniHttp.Handler {
                 }
                 break;
             }
-            case "discover": {
-                boolean refresh = "1".equals(r.q("refresh", ""));
-                String what = seg.length > 1 ? seg[1] : "";
-                if (what.equals("twitch") && m.equals("GET")) return MiniHttp.Response.json(discover.twitch(refresh));
-                if (what.equals("youtube") && m.equals("GET")) return MiniHttp.Response.json(discover.youtube(r.q("kind", "videos"), refresh));
-                if (what.equals("ytmoments") && m.equals("GET")) {
-                    return MiniHttp.Response.json(discover.youtubeMoments(r.q("video", ""), Double.parseDouble(r.q("duration", "0")), refresh));
-                }
-                if (what.equals("chats") && m.equals("GET")) return MiniHttp.Response.json(chats());
-                if (what.equals("link") && m.equals("POST")) {
-                    JSONObject b = r.json();
-                    discover.link(b.optString("key"), b.optString("file"));
-                    return ok();
-                }
-                break;
-            }
-            case "feed": {
-                JSONObject src = store.getSource(seg.length > 1 ? seg[1] : "");
-                if (src == null) throw new ApiError(404, "Источник не найден");
-                return MiniHttp.Response.json(platform.feed(src));
-            }
             case "jobs":
                 if (seg.length == 1 && m.equals("GET")) return MiniHttp.Response.json(queue.list());
                 if (seg.length == 1 && m.equals("POST")) return submitJob(r.json());
@@ -392,29 +369,10 @@ public class Api implements MiniHttp.Handler {
                 case "bitrate_mbps":
                     patch.put(k, Math.min(30, Math.max(2, b.optInt(k, 10))));
                     break;
-                case "watch_twitch":
-                case "watch_youtube": {
-                    // список через запятую: логины Twitch / ID каналов YouTube (UC…)
-                    StringBuilder sb = new StringBuilder();
-                    for (String x : b.optString(k, "").split("[,;\\s]+")) {
-                        String v = k.equals("watch_twitch") ? Discover.twitchLogin(x) : x.trim();
-                        if (v.isEmpty() || v.length() > 40) continue;
-                        if (k.equals("watch_youtube") && !v.matches("UC[A-Za-z0-9_-]{10,40}")) throw new ApiError(400, "ID канала YouTube начинается с UC: " + v);
-                        if (sb.length() > 0) sb.append(", ");
-                        sb.append(v);
-                    }
-                    patch.put(k, sb.toString());
-                    discover.clearCache();
-                    break;
-                }
-                case "twitch_client_id":
-                case "twitch_client_secret":
-                case "youtube_api_key":
                 case "tmdb_key": {
                     String v = b.optString(k, "").trim();
                     if (v.length() > 600 || !v.matches("[A-Za-z0-9_\\-.]*")) throw new ApiError(400, "Ключ содержит лишние символы — скопируйте его заново");
                     patch.put(k, v);
-                    discover.clearCache();
                     tmdb.clearCache();
                     break;
                 }
@@ -423,28 +381,6 @@ public class Api implements MiniHttp.Handler {
             }
         }
         return maskSecrets(store.saveSettings(patch));
-    }
-
-    /** Записи в папках источников, рядом с которыми лежит файл чата. */
-    private JSONObject chats() throws Exception {
-        JSONArray items = new JSONArray(), srcs = store.sources().getJSONArray("sources");
-        for (int i = 0; i < srcs.length(); i++) {
-            JSONObject src = srcs.getJSONObject(i);
-            if (!src.optBoolean("enabled", true)) continue;
-            JSONArray fs;
-            try {
-                fs = platform.listFiles(src);
-            } catch (Exception e) {
-                continue; // нет доступа к папке — источник пропускаем
-            }
-            for (int k = 0; k < fs.length(); k++) {
-                JSONObject f = fs.getJSONObject(k);
-                if (!f.optBoolean("chat")) continue;
-                items.put(new JSONObject().put("source_id", src.optString("id")).put("title", src.optString("title"))
-                        .put("name", f.optString("name")).put("path", f.optString("path")).put("mtime", f.optDouble("mtime")));
-            }
-        }
-        return new JSONObject().put("items", items);
     }
 
     /** План с состоянием клипов: в очереди / собирается / готов / ошибка. */
@@ -502,7 +438,7 @@ public class Api implements MiniHttp.Handler {
 
     private JSONObject cleanSource(JSONObject b) throws JSONException {
         JSONObject s = new JSONObject();
-        for (String k : new String[]{"id", "type", "title", "folder", "folder_uri", "youtube_channel_id", "twitch_login", "enabled", "profile"}) {
+        for (String k : new String[]{"id", "type", "title", "folder", "folder_uri", "enabled", "profile"}) {
             if (b.has(k) && !(k.equals("id") && b.isNull(k))) s.put(k, b.get(k));
         }
         return s;
@@ -583,8 +519,6 @@ public class Api implements MiniHttp.Handler {
         JSONArray up = new JSONArray();
         for (int i = 1; i < posts.size(); i++) up.put(posts.get(i));
         out.put("upcoming", up);
-        out.put("has_youtube", src != null && !src.optString("youtube_channel_id").isEmpty());
-        out.put("has_twitch", false);
         JSONObject clip = latestClipFor(cur.getString("source_id"));
         out.put("clip", clip == null ? JSONObject.NULL : clip);
         JSONArray h = st.getJSONArray("history"), hist = new JSONArray();

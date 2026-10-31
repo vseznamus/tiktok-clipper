@@ -30,8 +30,6 @@ public interface Platform {
 
     void deleteClip(JSONObject meta);
 
-    JSONObject feed(JSONObject source);
-
     /** Файл интерфейса из assets/web или null. */
     byte[] asset(String path);
 }

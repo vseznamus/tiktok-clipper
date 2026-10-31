@@ -127,7 +127,7 @@ async function viewToday() {
   };
   if (d.empty) {
     app.innerHTML = `<h1>Сегодня</h1>${planCard}<div class="card stack"><h2>Источников пока нет</h2>
-      <p class="muted">Добавьте сериал, фильм, стрим или блогера — и здесь появится план публикаций.</p>
+      <p class="muted">Добавьте ${APP ? "сериал или фильм" : "сериал, фильм, стрим или блогера"} — и здесь появится план публикаций.</p>
       <a class="btn primary" href="#/source/new">Добавить источник</a></div>`;
     bindToday();
     return;
@@ -310,7 +310,7 @@ async function viewClip(_arg, q) {
       <button class="btn" id="playSeg">▶ Проиграть отрезок</button>
     </div>
     <div class="card stack"><button class="btn" id="bMom">Предложить моменты</button>
-      ${info.has_chat ? `<p class="ok small">Рядом с видео есть файл чата — моменты найду по реакции зрителей.</p>` : ""}<div id="momRes"></div></div>
+      <div id="momRes"></div></div>
     <div class="card">
       <h2>Настройки клипа</h2>
       <label class="toggle"><span>Зеркало (отразить картинку)</span><input type="checkbox" id="oMirror" ${dr.mirror ? "checked" : ""}></label>
@@ -320,10 +320,10 @@ async function viewClip(_arg, q) {
         <label class="f" for="oLang">Язык речи</label><select id="oLang">${langs.map(([v, n]) => `<option value="${v}" ${dr.language === v ? "selected" : ""}>${n}</option>`).join("")}</select>
         <label class="f" for="oStyle">Стиль субтитров</label><select id="oStyle">${styles.map(([v, n]) => `<option value="${v}" ${dr.sub_style === v ? "selected" : ""}>${esc(n)}</option>`).join("")}</select>
       </div>
-      <label class="f" for="oLayout">Раскладка</label>
+      ${APP ? "" : `<label class="f" for="oLayout">Раскладка</label>
       <select id="oLayout"><option value="single" ${dr.layout === "single" ? "selected" : ""}>Один кадр по центру (фильм, сериал)</option>
         <option value="split" ${dr.layout === "split" ? "selected" : ""}>Экран сверху + вебкамера снизу</option></select>
-      <div id="camInfo" class="stack" style="margin-top:10px"></div>
+      <div id="camInfo" class="stack" style="margin-top:10px"></div>`}
     </div>
     <button class="btn primary" id="bMake">Сделать клип</button>`;
 
@@ -404,12 +404,14 @@ async function viewClip(_arg, q) {
     $("#oStyle").onchange = (e) => { dr.sub_style = e.target.value; saveDraft(); };
     const camVis = () => {
       const el = $("#camInfo");
+      if (!el) return;
       if (dr.layout !== "split") { el.innerHTML = ""; return; }
       if (!src) { el.innerHTML = `<p class="warn">Для раскладки с вебкамерой выберите источник: рамка хранится в его настройках.</p>`; return; }
       el.innerHTML = `<p class="${camOk ? "ok" : "warn"}">${camOk ? "Рамка вебкамеры задана." : "Рамка вебкамеры не задана — клип получится в режиме «один кадр»."}</p>
         <a class="btn" href="#/cam/${encodeURIComponent(src.id)}?file=${encodeURIComponent(dr.file)}&t=${dr.start}">Проверить рамку вебкамеры</a>`;
     };
-    $("#oLayout").onchange = (e) => { dr.layout = e.target.value; saveDraft(); camVis(); };
+    if (APP) dr.layout = "single"; // в приложении — только сериалы и фильмы, один кадр
+    else $("#oLayout").onchange = (e) => { dr.layout = e.target.value; saveDraft(); camVis(); };
     subVis(); camVis();
 
     $("#bMake").onclick = async () => {
@@ -713,7 +715,7 @@ async function viewSettings() {
   <div class="card"><h2>Источники</h2>
     ${S.cfg.sources.length ? `<ul class="list">${S.cfg.sources.map((s) => `<li><a class="item" href="#/source/${encodeURIComponent(s.id)}">
       <span class="badge ${s.type}">${esc(typeName(s.type))}</span><span class="t"><b>${esc(s.title)}</b>${s.enabled === false ? " (выключен)" : ""}<br>
-      <span class="muted small">папка: ${esc(s.folder)} · ${s.full_profile.layout === "split" ? "экран + вебкамера" : "один кадр"}</span></span><span class="chev">›</span></a></li>`).join("")}</ul>`
+      <span class="muted small">папка: ${esc(s.folder)}${APP ? "" : ` · ${s.full_profile.layout === "split" ? "экран + вебкамера" : "один кадр"}`}</span></span><span class="chev">›</span></a></li>`).join("")}</ul>`
       : `<p class="muted">Пока пусто.</p>`}
     <a class="btn primary" href="#/source/new">Добавить источник</a></div>
 
@@ -782,12 +784,12 @@ async function viewSettings() {
     bKeys.onclick = async () => {
       const body = {};
       for (const [id, k] of KEY_FIELDS) { const v = $("#" + id).value.trim(); if (v) body[k] = v; }
-      if (!Object.keys(body).length) { toast("Вставьте ключ в нужное поле", true); return; }
-      await send(body, "Ключи сохранены");
+      if (!Object.keys(body).length) { toast("Вставьте ключ в поле", true); return; }
+      await send(body, "Ключ сохранён");
     };
     $("#bKeysDel").onclick = async () => {
-      if (!confirm("Стереть все ключи с телефона?")) return;
-      await send(Object.fromEntries(KEY_FIELDS.map(([, k]) => [k, ""])), "Ключи стёрты");
+      if (!confirm("Стереть ключ TMDB с телефона?")) return;
+      await send(Object.fromEntries(KEY_FIELDS.map(([, k]) => [k, ""])), "Ключ стёрт");
     };
   }
   $("#bAsr").onclick = async () => {
@@ -800,177 +802,34 @@ async function viewSettings() {
   const out = $("#bOut"); if (out) out.onclick = async () => { await fetch("/logout", { method: "POST" }); location.href = "/login"; };
 }
 
-const KEY_FIELDS = [["kTwId", "twitch_client_id"], ["kTwSec", "twitch_client_secret"], ["kYt", "youtube_api_key"], ["kTm", "tmdb_key"]];
+const KEY_FIELDS = [["kTm", "tmdb_key"]];
 function keysCard(se) {
   const f = (id, k, label) => `<label class="f" for="${id}">${label}</label>
     <input id="${id}" autocomplete="off" autocapitalize="off" spellcheck="false"
       placeholder="${se[k + "_set"] ? `сохранён (${esc(se[k + "_hint"])}) — вставьте новый, чтобы заменить` : "не задан"}">`;
-  return `<div class="card"><h2>Ключи для вкладки «Моменты»</h2>
-    <p class="muted small">Бесплатные. Хранятся только на этом телефоне. Как получить — в инструкции, раздел «Моменты».</p>
-    ${f("kTwId", "twitch_client_id", "Twitch: Client ID")}
-    ${f("kTwSec", "twitch_client_secret", "Twitch: Client Secret")}
-    <p class="muted small"><a href="https://dev.twitch.tv/console/apps" target="_blank" rel="noopener">dev.twitch.tv/console/apps</a></p>
-    ${f("kYt", "youtube_api_key", "YouTube Data API: ключ")}
-    <p class="muted small"><a href="https://console.cloud.google.com/apis/library/youtube.googleapis.com" target="_blank" rel="noopener">console.cloud.google.com</a></p>
-    ${f("kTm", "tmdb_key", "TMDB: ключ API или токен доступа")}
+  return `<div class="card"><h2>Ключ TMDB</h2>
+    <p class="muted small">Бесплатный. Нужен для рейтинга серий и подборок во вкладке «Моменты». Хранится только на этом телефоне.
+      Как получить — в инструкции, раздел «Моменты».</p>
+    ${f("kTm", "tmdb_key", "Ключ API или токен доступа")}
     <p class="muted small"><a href="https://www.themoviedb.org/settings/api" target="_blank" rel="noopener">themoviedb.org/settings/api</a></p>
-    <div style="height:12px"></div><button class="btn primary" id="bKeys">Сохранить ключи</button>
-    <button class="btn ghost sm" id="bKeysDel">Стереть ключи</button></div>`;
+    <div style="height:12px"></div><button class="btn primary" id="bKeys">Сохранить ключ</button>
+    <button class="btn ghost sm" id="bKeysDel">Стереть ключ</button></div>`;
 }
 
-// ------------------------------------------------------------------ «Моменты»: где зрители реагировали сильнее всего
-const DISC = [["kino", "Фильмы и сериалы"], ["twitch", "Twitch"], ["streams", "YouTube: стримы"], ["videos", "YouTube: каналы"]];
-function fmtNum(n) { n = Number(n) || 0; return n >= 1e6 ? (n / 1e6).toFixed(1).replace(".0", "") + " млн" : n >= 1e3 ? (n / 1e3).toFixed(1).replace(".0", "") + " тыс." : String(n); }
+// ------------------------------------------------------------------ «Моменты»: автоплан и подборки TMDB (сериалы и фильмы)
 function fmtRating(r) { return (Number(r) || 0).toFixed(1).replace(".", ","); }
-function fmtDay(iso) { const d = new Date(iso); return isNaN(d) ? "" : `${d.getDate()} ${MON[d.getMonth()]}`; }
 
-async function viewDiscover(sec, q) {
-  sec = DISC.some(([k]) => k === sec) ? sec : (S.discSec || "kino");
-  S.discSec = sec;
+async function viewDiscover(_sec, q) {
   const seq = S.seq;
   await loadCfg();
   if (staleSince(seq)) return;
+  S.discSec = "kino";
   app.innerHTML = `<h1>Моменты</h1>
-  <div class="seg seg4" id="dSeg">${DISC.map(([k, n]) => `<button data-s="${k}" class="${k === sec ? "on" : ""}">${n}</button>`).join("")}</div>
-  <p class="muted small" style="margin:10px 2px">${sec === "kino" ? "Автоплан моментов на несколько дней, лучшие серии по рейтингу TMDB, что популярно сейчас."
-    : sec === "twitch" ? "Где зрители реагировали сильнее всего: всплески в чате записи и клипы зрителей."
-    : "Минуты, которые зрители чаще всего упоминают в комментариях (например, «12:34 ахах»)."}</p>
+  <p class="muted small" style="margin:10px 2px">Автоплан моментов на несколько дней, лучшие серии по рейтингу TMDB, что популярно сейчас.</p>
   <div id="dBox"><p class="muted pad">Загружаю…</p></div>
   <button class="btn ghost sm" id="dRef">Обновить</button>`;
-  $$("#dSeg button").forEach((b) => (b.onclick = () => go("#/discover/" + b.dataset.s)));
-  $("#dRef").onclick = () => render(true);
-  let chatsCache = null;
-  render(q && q.get("refresh") === "1");
-
-  async function render(refresh) {
-    if (sec === "kino") return renderKino($("#dBox"), refresh);
-    const box = $("#dBox");
-    box.innerHTML = `<p class="muted pad">Загружаю…</p>`;
-    let d, chats = null;
-    try {
-      if (sec === "twitch") chats = chatsCache = await api("/api/discover/chats").catch(() => ({ items: [] }));
-      d = sec === "twitch" ? await api("/api/discover/twitch" + (refresh ? "?refresh=1" : ""))
-        : await api(`/api/discover/youtube?kind=${sec}` + (refresh ? "&refresh=1" : ""));
-    } catch (e) { box.innerHTML = `<p class="err pad">${esc(e.message)}</p>`; return; }
-    if (parseHash().name !== "discover" || S.discSec !== sec) return;
-    const yt = sec !== "twitch";
-    const chatHtml = chats ? chatCard(chats.items) : "";
-    const watchHtml = watchCard(yt);
-    if (!yt && !d.configured) {
-      box.innerHTML = chatHtml + `<div class="card stack"><h2>Клипы зрителей Twitch</h2>
-        <p class="muted small">Дополнительно, если получится завести ключи Twitch: моменты, из которых зрители нарезали больше всего клипов.
-        Ключи — в «Настройках» (инструкция, раздел «Моменты»). Без ключей работает поиск по чату выше.</p></div>`;
-      bindChats(); return;
-    }
-    if (!d.configured) {
-      box.innerHTML = `<div class="card stack"><h2>Нужен ключ ${yt ? "YouTube" : "Twitch"}</h2>
-        <p>${yt ? "Ключ YouTube Data API бесплатный: Google Cloud → создать проект → включить «YouTube Data API v3» → «Учётные данные» → «Создать ключ API»."
-          : "Ключи Twitch бесплатные: dev.twitch.tv/console/apps → «Register Your Application» → Client ID и Client Secret."}</p>
-        <p class="muted small">Пошагово — в инструкции, раздел «Моменты».</p>
-        <a class="btn primary" href="#/settings">Ввести ключ в «Настройках»</a></div>`;
-      return;
-    }
-    if (!d.has_sources) {
-      box.innerHTML = chatHtml + `<div class="card stack"><h2>Нет ${yt ? "каналов YouTube" : "стримеров Twitch"}</h2>
-        <p>Откройте источник (стрим или блогер) и заполните поле «${yt ? "YouTube: ID канала" : "Twitch: логин"}» — или впишите их в список ниже.</p>
-        <a class="btn" href="#/settings">Открыть «Настройки»</a></div>` + watchHtml;
-      bindChats(); bindWatch(yt); return;
-    }
-    const groups = yt ? d.channels : d.streamers;
-    box.innerHTML = chatHtml + groups.map((g, gi) => `<div class="card"><h2>${esc(g.name || g.title)}${g.watch ? ' <span class="muted small">· из списка</span>' : ""}</h2>
-      ${g.ok === false ? `<p class="err">${esc(g.error)}</p>` : ""}
-      ${(yt ? g.videos : g.vods || []).map((v, vi) => itemHtml(g, v, gi, vi)).join("")
-        || (g.ok === false ? "" : `<p class="muted">${yt ? (sec === "streams" ? "Прошедших трансляций не найдено." : "Видео не найдено.") : "Записей эфиров нет (или стример их не сохраняет)."}</p>`)}
-    </div>`).join("") + watchHtml;
-    bind(groups, yt); bindChats(); bindWatch(yt);
-  }
-
-  function chatCard(items) {
-    return `<div class="card stack"><h2>Моменты по чату записи</h2>
-      <p class="muted small">Без ключей и интернета. Положите рядом с записью эфира файл чата с тем же именем
-        (например, <b>эфир.mp4</b> и <b>эфир.json</b> или <b>эфир.chat.txt</b>) — приложение найдёт минуты, где чат «взрывается».</p>
-      ${items.length ? `<ul class="list">${items.map((f, i) => `<li><button class="item" data-chat="${i}"><span class="t"><b class="wrap">${esc(f.name)}</b><br>
-        <span class="muted small">${esc(f.title)} · есть чат</span></span><span class="chev">›</span></button></li>`).join("")}</ul>`
-        : `<p class="warn small">Пока ни у одной записи в папках источников нет файла чата.</p>`}</div>`;
-  }
-  function bindChats() {
-    const items = (chatsCache || {}).items || [];
-    $$("[data-chat]").forEach((b) => (b.onclick = () => {
-      const f = items[+b.dataset.chat];
-      Object.assign(S.draft, { source_id: f.source_id, file: f.path }); saveDraft();
-      go(`#/clip?source=${encodeURIComponent(f.source_id)}&file=${encodeURIComponent(f.path)}&auto=mom`);
-    }));
-  }
-  function watchCard(yt) {
-    const k = yt ? "watch_youtube" : "watch_twitch";
-    return `<div class="card"><h2>Слежу без источника</h2>
-      <p class="muted small">${yt ? "ID каналов YouTube (начинаются с UC)" : "Логины Twitch"} через запятую — для тех, у кого нет своей папки и рамки.
-        Файл для нарезки выбирается кнопкой «Выбрать видео на телефоне».</p>
-      <input id="wList" autocapitalize="off" spellcheck="false" value="${esc(S.cfg.settings[k] || "")}" placeholder="${yt ? "UCxxxx, UCyyyy" : "streamer1, streamer2"}">
-      <div style="height:10px"></div><button class="btn" id="wSave">Сохранить список</button></div>`;
-  }
-  function bindWatch(yt) {
-    const b = $("#wSave"); if (!b) return;
-    b.onclick = async () => {
-      const val = $("#wList").value;
-      const bad = yt && val.split(/[,;\s]+/).filter(Boolean).find((x) => !/^UC[\w-]{10,40}$/.test(x));
-      if (bad) { toast("ID канала YouTube начинается с UC: " + bad, true); return; }
-      try { await api("/api/settings", { method: "PUT", body: { [yt ? "watch_youtube" : "watch_twitch"]: val } }); } catch (e) { return; }
-      await loadCfg(true); toast("Список сохранён"); render(true);
-    };
-  }
-
-  function itemHtml(g, v, gi, vi) {
-    const yt = sec !== "twitch";
-    const head = `<div class="vod"><b class="wrap">${esc(v.title)}</b>
-      <p class="muted small">${fmtDay(v.created_at)} · ${fmt(v.duration, false)} · ${fmtNum(v.views)} просмотров${yt ? ` · ${fmtNum(v.comments)} комм.` : ""}</p>
-      ${v.file ? `<p class="small wrap">Файл: <b>${esc(v.file.split("/").pop())}</b> <a href="#" data-unlink="${gi}:${vi}">другой</a></p>` : ""}`;
-    let body;
-    if (!v.moments) body = `<button class="btn sm" data-find="${gi}:${vi}">Найти моменты по комментариям</button>`;
-    else if (!v.moments.length) body = `<p class="muted small">${yt ? "В комментариях нет таймкодов." : "Из этой записи зрители ещё не нарезали клипов."}</p>`;
-    else body = v.moments.map((m, mi) => `<div class="mom"><div class="row"><span class="tm">${fmt(m.t, false)}</span><span class="grow"></span>
-        <span class="small muted">${yt ? `упоминаний: ${m.mentions}` : `клипов: ${m.clips} · ${fmtNum(m.views)} просм.`}</span></div>
-      <span class="small wrap">«${esc(yt ? m.quote : m.title)}»</span>
-      <div class="row"><button class="btn sm primary" data-cut="${gi}:${vi}:${mi}">Резать</button>
-        <a class="btn sm ghost" target="_blank" rel="noopener" href="${esc(yt ? `${v.url}&t=${Math.floor(m.t)}s` : m.clip_url)}">${yt ? "YouTube ↗" : "Клип ↗"}</a></div></div>`).join("");
-    return head + body + `</div>`;
-  }
-
-  function bind(groups, yt) {
-    const at = (s) => { const [gi, vi, mi] = s.split(":").map(Number); const g = groups[gi], v = (yt ? g.videos : g.vods)[vi]; return { g, v, m: mi != null ? v.moments[mi] : null }; };
-    $$("[data-find]").forEach((b) => (b.onclick = async () => {
-      const { v } = at(b.dataset.find);
-      b.disabled = true; b.textContent = "Читаю комментарии…";
-      try {
-        const r = await api(`/api/discover/ytmoments?video=${encodeURIComponent(v.id)}&duration=${v.duration || 0}`);
-        v.moments = r.moments; v.comments_read = r.comments;
-        const [gi, vi] = b.dataset.find.split(":").map(Number);
-        b.closest(".vod").outerHTML = itemHtml(groups[gi], v, gi, vi);
-        bind(groups, yt);
-      } catch (e) { b.disabled = false; b.textContent = "Найти моменты по комментариям"; }
-    }));
-    $$("[data-unlink]").forEach((a) => (a.onclick = async (e) => {
-      e.preventDefault();
-      const { v } = at(a.dataset.unlink);
-      await api("/api/discover/link", { method: "POST", body: { key: v.key, file: "" } });
-      v.file = null; render(false);
-    }));
-    $$("[data-cut]").forEach((b) => (b.onclick = async () => {
-      const { g, v, m } = at(b.dataset.cut);
-      let file = v.file;
-      if (!file) {
-        file = await pickFileFor(g.source_id, v);
-        if (!file) return;
-        await api("/api/discover/link", { method: "POST", body: { key: v.key, file } });
-      }
-      const mlen = Number(S.cfg.settings.moment_len) || 30;
-      const start = Math.max(0, m.t - 3);
-      const end = Math.min(start + 180, Math.max(start + mlen, (m.end || 0) + 2));
-      const src = file.startsWith("_picked/") ? "" : g.source_id;
-      Object.assign(S.draft, { source_id: src, file, start, end }); saveDraft();
-      go(`#/clip?source=${encodeURIComponent(src)}&file=${encodeURIComponent(file)}&start=${start.toFixed(1)}&end=${end.toFixed(1)}`);
-    }));
-  }
+  $("#dRef").onclick = () => renderKino($("#dBox"), true);
+  renderKino($("#dBox"), !!(q && q.get("refresh") === "1"));
 }
 
 // ------------------------------------------------------------------ «Фильмы и сериалы»: автоплан и TMDB
@@ -1015,7 +874,7 @@ async function renderKino(box, refresh) {
   const kinoSrcs = srcs.filter((x) => x.type === "series" || x.type === "movie");
   box.innerHTML = `<div class="card stack"><h2>Автоплан</h2>
       <p class="muted small">Приложение само выберет моменты и разложит по дням — один в день.
-        Сериал: лучшие по рейтингу серии (TMDB), фильм: лучшие сцены, стрим: всплески чата или звука. Оценка — офлайн.</p>
+        Сериал: лучшие по рейтингу серии (TMDB), фильм: лучшие сцены. Оценка сцен — офлайн, без интернета.</p>
       ${srcs.length ? `<label class="f" for="plSrc">Источник</label><select id="plSrc">${srcs.map((x) => `<option value="${esc(x.id)}">${esc(x.title)} (${esc(typeName(x.type))})</option>`).join("")}</select>
       <div class="grid2"><div><label class="f" for="plN">Сколько дней</label><input type="number" id="plN" min="1" max="7" value="3"></div>
         <div><label class="f" for="plD">С какого дня</label><input type="date" id="plD" value="${iso}"></div></div>
@@ -1089,35 +948,6 @@ async function tmdbSource(id, refresh) {
   }));
 }
 
-/** Какой файл из папки источника — эта запись? Даты в имени файла подсказывают ответ. */
-function pickFileFor(sourceId, item) {
-  return new Promise(async (resolve) => {
-    const data = await api("/api/files?source=" + encodeURIComponent(sourceId)).catch(() => ({ files: [] }));
-    const d = new Date(item.created_at), p2 = (n) => String(n).padStart(2, "0");
-    const keys = isNaN(d) ? [] : [`${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())}`, `${d.getFullYear()}${p2(d.getMonth() + 1)}${p2(d.getDate())}`,
-      `${p2(d.getDate())}.${p2(d.getMonth() + 1)}.${d.getFullYear()}`, `${d.getFullYear()}_${p2(d.getMonth() + 1)}_${p2(d.getDate())}`];
-    const guess = (f) => keys.some((k) => f.name.includes(k));
-    const files = [...data.files].sort((a, b) => guess(b) - guess(a));
-    const sh = document.createElement("div");
-    sh.className = "sheet";
-    sh.innerHTML = `<div><h2>Какой файл — эта запись?</h2>
-      <p class="muted small wrap">«${esc(item.title)}» · ${fmtDay(item.created_at)} · ${fmt(item.duration, false)}</p>
-      <p class="muted small">Видео не скачивается — выберите файл, который уже лежит в папке источника. Приложение запомнит выбор.</p>
-      ${files.length ? `<ul class="list">${files.map((f, i) => `<li><button class="item" data-i="${i}"><span class="t"><b class="wrap">${esc(f.name)}</b><br>
-        <span class="muted small">${fmtSize(f.size)}${guess(f) ? " · ★ похоже, это она (дата в имени)" : ""}</span></span><span class="chev">›</span></button></li>`).join("")}</ul>`
-        : `<p class="warn">В папке источника нет видео.</p>`}
-      ${APP ? `<button class="btn ghost" id="shPick">Выбрать видео на телефоне</button>` : ""}
-      <button class="btn ghost" id="shCancel">Отмена</button></div>`;
-    document.body.appendChild(sh);
-    const done = (v) => { sh.remove(); resolve(v); };
-    $$("[data-i]", sh).forEach((b) => (b.onclick = () => done(files[+b.dataset.i].path)));
-    $("#shCancel", sh).onclick = () => done(null);
-    sh.onclick = (e) => { if (e.target === sh) done(null); };
-    const pk = $("#shPick", sh);
-    if (pk) pk.onclick = () => { window.onVideoPicked = (path) => done(path); window.AndroidApp.pickVideo(); };
-  });
-}
-
 function appAsrCard(st, se) {
   const models = st.asr_models || [];
   const langs = [["auto", "Определять автоматически"], ["ru", "Русский"], ["en", "English"], ["uk", "Українська"]];
@@ -1154,7 +984,7 @@ async function viewSource(id) {
   const folders = (await api("/api/folders")).folders;
   const p = Object.assign({ layout: "single", mirror: true, subtitles: true, sub_style: "classic", language: "auto", single_zoom: 1,
     split_screen_h: 0.45, split_gap_h: 0.1, split_cam_h: 0.45, screen_fit: "crop" }, s.full_profile || {});
-  let type = s.type, layout = isNew ? "single" : p.layout;
+  let type = s.type, layout = APP || isNew ? "single" : p.layout;
   const typeBtns = () => S.cfg.types.map((t) => `<button data-t="${t}" class="${t === type ? "on" : ""}">${esc(typeName(t))}</button>`).join("");
   app.innerHTML = `<h1>${isNew ? "Новый источник" : "Источник"}</h1>
   <div class="card">
@@ -1163,19 +993,18 @@ async function viewSource(id) {
     <label class="f" for="sF">Папка с видео</label>
     ${APP ? `<p class="wrap"><b id="sFname">${esc(s.folder || "не выбрана")}</b></p>
       <button class="btn" id="bFolder">Выбрать папку на телефоне</button>
-      <p class="muted small">Программа увидит только эту папку. Положите туда серии, фильмы или записи стримов.</p>`
+      <p class="muted small">Программа увидит только эту папку. Положите туда серии или фильм.</p>`
     : `<input id="sF" list="fl" value="${esc(s.folder)}" placeholder="Например: breaking_bad">
     <datalist id="fl">${folders.map((f) => `<option value="${esc(f)}">`).join("")}</datalist>
     <p class="muted small wrap">Это подпапка в общей папке ${esc((await loadStatus()).media_root)}. Если её нет — создам.</p>`}
-    <div id="ytBox"><label class="f" for="sY">YouTube: ID канала (необязательно)</label><input id="sY" value="${esc(s.youtube_channel_id || "")}" placeholder="UCxxxxxxxxxxxxxxxxxxxxxx">
+    <div id="ytBox" ${APP ? "hidden" : ""}><label class="f" for="sY">YouTube: ID канала (необязательно)</label><input id="sY" value="${esc(s.youtube_channel_id || "")}" placeholder="UCxxxxxxxxxxxxxxxxxxxxxx">
       <p class="muted small">Нужен, чтобы на экране «Сегодня» видеть свежее видео. ID начинается с UC.</p>
-      <label class="f" for="sTw">Twitch: логин (необязательно)</label><input id="sTw" value="${esc(s.twitch_login || "")}" placeholder="например, buster">
-      <p class="muted small">Логин из адреса канала: twitch.tv/<b>логин</b>. Нужен для вкладки «Моменты».</p></div>
+      <label class="f" for="sTw">Twitch: логин (необязательно)</label><input id="sTw" value="${esc(s.twitch_login || "")}"></div>
     <label class="toggle"><span>Источник включён</span><input type="checkbox" id="sEn" ${s.enabled !== false ? "checked" : ""}></label>
   </div>
   <div class="card"><h2>Профиль нарезки</h2>
-    <label class="f">Раскладка</label>
-    <div class="seg" id="lSeg"><button data-l="single">Один кадр</button><button data-l="split">Экран + вебкамера</button></div>
+    <div ${APP ? "hidden" : ""}><label class="f">Раскладка</label>
+    <div class="seg" id="lSeg"><button data-l="single">Один кадр</button><button data-l="split">Экран + вебкамера</button></div></div>
     <div id="singleOpts"><label class="f" for="pZ">Увеличение кадра: <span id="pZv">${Number(p.single_zoom).toFixed(2)}</span>×</label>
       <input type="range" id="pZ" min="1" max="2" step="0.05" value="${p.single_zoom}">
       <p class="muted small">1× — весь кадр по ширине, больше — крупнее, края обрезаются.</p></div>
@@ -1197,11 +1026,11 @@ async function viewSource(id) {
 
   const syncType = () => {
     $$("#tSeg button").forEach((b) => b.classList.toggle("on", b.dataset.t === type));
-    $("#ytBox").hidden = !(type === "stream" || type === "blogger");
+    $("#ytBox").hidden = APP || !(type === "stream" || type === "blogger");
   };
   const syncLayout = () => {
     $$("#lSeg button").forEach((b) => b.classList.toggle("on", b.dataset.l === layout));
-    $("#singleOpts").hidden = layout !== "single"; $("#splitOpts").hidden = layout !== "split";
+    $("#singleOpts").hidden = layout !== "single"; $("#splitOpts").hidden = APP || layout !== "split";
   };
   const syncSplit = () => {
     let sh = +$("#pS").value, g = +$("#pG").value;

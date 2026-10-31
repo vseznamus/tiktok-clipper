@@ -22,8 +22,6 @@ public final class Schedule {
         switch (t) {
             case "series": return "Сериал";
             case "movie": return "Фильм";
-            case "stream": return "Стрим";
-            case "blogger": return "Блогер";
             default: return t;
         }
     }
@@ -189,13 +187,10 @@ public final class Schedule {
         return "через " + diff + " дн.";
     }
 
-    /** Какой файл брать: сериалы/фильмы — первый неиспользованный по имени, стримы/блогеры — самый свежий. */
+    /** Какой файл брать: первый неиспользованный по имени. */
     public static JSONObject suggestFiles(String type, List<JSONObject> files, JSONArray used) throws JSONException {
         List<JSONObject> unused = new ArrayList<>();
         for (JSONObject f : files) if (!Store.contains(used, f.optString("path"))) unused.add(f);
-        if (type.equals("stream") || type.equals("blogger")) {
-            unused.sort((a, b) -> Double.compare(b.optDouble("mtime"), a.optDouble("mtime")));
-        }
         String last = used.length() > 0 ? used.optString(used.length() - 1) : null;
         JSONObject cont = null;
         for (JSONObject f : files) if (f.optString("path").equals(last)) cont = f;

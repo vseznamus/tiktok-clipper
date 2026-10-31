@@ -20,12 +20,12 @@ import java.util.regex.Pattern;
  */
 public final class Tmdb {
     private final Store store;
-    private final Discover.Http http;
+    private final Net.Http http;
     private final Map<String, Object[]> cache = new HashMap<>();
 
-    public Tmdb(Store store, Discover.Http http) {
+    public Tmdb(Store store, Net.Http http) {
         this.store = store;
-        this.http = http != null ? http : Discover::realRequest;
+        this.http = http != null ? http : Net::realRequest;
     }
 
     static final long LIST_TTL = 6 * 3600 * 1000L, SHOW_TTL = 24 * 3600 * 1000L;
@@ -49,7 +49,7 @@ public final class Tmdb {
 
     public JSONArray search(String q) throws Exception {
         if (q.trim().isEmpty()) return new JSONArray();
-        JSONArray all = items(get("search/multi?language=ru-RU&include_adult=false&query=" + Discover.enc(q.trim()), LIST_TTL, false), null, 20);
+        JSONArray all = items(get("search/multi?language=ru-RU&include_adult=false&query=" + Net.enc(q.trim()), LIST_TTL, false), null, 20);
         JSONArray out = new JSONArray();
         for (int i = 0; i < all.length() && out.length() < 8; i++) {
             String t = all.getJSONObject(i).optString("type");
@@ -227,8 +227,8 @@ public final class Tmdb {
         h.put("Accept", "application/json");
         String url = "https://api.themoviedb.org/3/" + path;
         if (key.startsWith("eyJ")) h.put("Authorization", "Bearer " + key);
-        else url += (path.contains("?") ? "&" : "?") + "api_key=" + Discover.enc(key);
-        Discover.Resp r;
+        else url += (path.contains("?") ? "&" : "?") + "api_key=" + Net.enc(key);
+        Net.Resp r;
         try {
             r = http.request(url, h, null);
         } catch (java.io.IOException e) {

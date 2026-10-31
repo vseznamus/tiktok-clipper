@@ -17,12 +17,10 @@ import android.os.Build;
 import android.os.ParcelFileDescriptor;
 import android.provider.DocumentsContract;
 import android.provider.MediaStore;
-import android.util.Xml;
 
 import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
-import org.xmlpull.v1.XmlPullParser;
 
 import java.io.ByteArrayOutputStream;
 import java.io.File;
@@ -59,8 +57,6 @@ public class AndroidPlatform implements Platform {
     final Store store;
     private final Map<String, Uri> uriCache = new ConcurrentHashMap<>();
     private final Map<String, Uri> srtCache = new ConcurrentHashMap<>();
-    private final Map<String, Uri> chatCache = new ConcurrentHashMap<>(); // файлы чата рядом с видео
-    private final Map<String, Object[]> feedCache = new ConcurrentHashMap<>();
 
     AndroidPlatform(Context ctx, Store store) {
         this.ctx = ctx;
@@ -134,10 +130,6 @@ public class AndroidPlatform implements Platform {
                         srtCache.put(id, doc);
                         continue;
                     }
-                    if (ru.tiktokclipper.core.ChatMoments.isChatName(name)) {
-                        chatCache.put(id, doc);
-                        continue;
-                    }
                     if (!isVideoName(name)) continue;
                     uriCache.put(id, doc);
                     out.add(file(name, id, c.getLong(2), c.getLong(3) / 1000.0));
@@ -146,7 +138,6 @@ public class AndroidPlatform implements Platform {
                 throw new ApiError(403, "Нет доступа к папке источника. Выберите папку заново в «Настройки» → источник.");
             }
         }
-        for (JSONObject f : out) if (chatKey(f.optString("path")) != null) f.put("chat", true);
         Collections.sort(out, (a, b) -> naturalCompare(a.optString("name"), b.optString("name")));
         return new JSONArray(out);
     }
@@ -255,41 +246,9 @@ public class AndroidPlatform implements Platform {
         Uri u = resolve(fileId);
         JSONObject o = probeUri(u);
         o.put("has_srt", sidecarSrt(fileId) != null);
-        o.put("has_chat", chatKey(fileId) != null);
         return o;
     }
 
-    /** Ключ файла чата рядом с видео (то же имя: «эфир.json», «эфир.chat.txt», «эфир_chat.json.gz») или null. */
-    private String chatKey(String fileId) {
-        int slash = fileId.indexOf('/');
-        if (slash <= 0 || fileId.startsWith(PICKED)) return null;
-        String prefix = fileId.substring(0, slash + 1), name = fileId.substring(slash + 1);
-        String stem = name.contains(".") ? name.substring(0, name.lastIndexOf('.')) : name;
-        String best = null;
-        for (String k : chatCache.keySet()) {
-            if (!k.startsWith(prefix)) continue;
-            String fn = k.substring(prefix.length());
-            if (!ru.tiktokclipper.core.ChatMoments.isChatFor(fn, stem)) continue;
-            if (best == null || fn.length() < best.length() - prefix.length()) best = k; // точнее всего — самое короткое имя
-        }
-        return best;
-    }
-
-    /** Файл чата рядом с видео или null. */
-    Uri sidecarChat(String fileId) {
-        if (chatCache.isEmpty()) {
-            try {
-                resolve(fileId);
-                int slash = fileId.indexOf('/');
-                JSONObject src = slash > 0 ? store.getSource(fileId.substring(0, slash)) : null;
-                if (src != null) listFiles(src);
-            } catch (Exception ignored) {
-                return null;
-            }
-        }
-        String k = chatKey(fileId);
-        return k == null ? null : chatCache.get(k);
-    }
 
     JSONObject probeUri(Uri u) throws Exception {
         JSONObject o = new JSONObject();
@@ -633,69 +592,6 @@ public class AndroidPlatform implements Platform {
             int n;
             while ((n = in.read(buf)) > 0) out.write(buf, 0, n);
         }
-    }
-
-    // ------------------------------------------------------------ YouTube RSS
-
-    @Override
-    public JSONObject feed(JSONObject source) {
-        JSONObject out = new JSONObject();
-        String ch = source.optString("youtube_channel_id").trim();
-        try {
-            if (ch.isEmpty()) return out;
-            Object[] hit = feedCache.get(ch);
-            if (hit != null && System.currentTimeMillis() - (Long) hit[0] < 30 * 60 * 1000) {
-                out.put("youtube", hit[1]);
-                return out;
-            }
-            JSONObject res = new JSONObject();
-            try {
-                HttpURLConnection c = (HttpURLConnection) new URL("https://www.youtube.com/feeds/videos.xml?channel_id="
-                        + URLEncoder.encode(ch, "UTF-8")).openConnection();
-                c.setConnectTimeout(8000);
-                c.setReadTimeout(8000);
-                try (InputStream in = c.getInputStream()) {
-                    res.put("ok", true);
-                    res.put("items", parseRss(in));
-                }
-            } catch (Exception e) {
-                res.put("ok", false);
-                res.put("error", "YouTube недоступен или неверный ID канала");
-            }
-            feedCache.put(ch, new Object[]{System.currentTimeMillis(), res});
-            out.put("youtube", res);
-        } catch (JSONException ignored) {
-        }
-        return out;
-    }
-
-    static JSONArray parseRss(InputStream in) throws Exception {
-        XmlPullParser p = Xml.newPullParser();
-        p.setFeature(XmlPullParser.FEATURE_PROCESS_NAMESPACES, false);
-        p.setInput(in, "UTF-8");
-        JSONArray items = new JSONArray();
-        JSONObject cur = null;
-        String tag = null;
-        for (int ev = p.getEventType(); ev != XmlPullParser.END_DOCUMENT && items.length() < 3; ev = p.next()) {
-            if (ev == XmlPullParser.START_TAG) {
-                tag = p.getName();
-                if (tag.equals("entry")) cur = new JSONObject();
-                else if (cur != null && tag.equals("link")) cur.put("url", p.getAttributeValue(null, "href"));
-            } else if (ev == XmlPullParser.TEXT && cur != null && tag != null) {
-                String t = p.getText().trim();
-                if (t.isEmpty()) continue;
-                if (tag.equals("title")) cur.put("title", t);
-                else if (tag.equals("published")) cur.put("published", t);
-                else if (tag.equals("yt:videoId")) cur.put("video_id", t);
-            } else if (ev == XmlPullParser.END_TAG) {
-                if (p.getName().equals("entry") && cur != null) {
-                    items.put(cur);
-                    cur = null;
-                }
-                tag = null;
-            }
-        }
-        return items;
     }
 
     @Override

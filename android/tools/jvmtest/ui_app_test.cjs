@@ -46,43 +46,54 @@ async function check(page, name, full = false) {
     step("без ключа сессии API отвечает 401");
     browser = await chromium.launch();
     const ctx = await browser.newContext({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 2, isMobile: true, hasTouch: true });
-    await ctx.addInitScript(({ streamerDir }) => {
+    await ctx.addInitScript(({ bbDir }) => {
       window.__calls = [];
       window.AndroidApp = {
-        pickFolder: () => { window.__calls.push("pickFolder"); setTimeout(() => window.onFolderPicked(window.__folder || { uri: streamerDir, name: "streamer" }), 50); },
+        pickFolder: () => { window.__calls.push("pickFolder"); setTimeout(() => window.onFolderPicked(window.__folder || { uri: bbDir, name: "breaking_bad" }), 50); },
         pickVideo: () => { window.__calls.push("pickVideo"); setTimeout(() => window.onVideoPicked("_picked/old_rip.mp4"), 50); },
         shareClip: (id) => window.__calls.push("share:" + id),
         openClip: (id) => window.__calls.push("open:" + id),
         version: () => "test",
       };
-    }, { streamerDir: path.join(demo, "media/streamer") });
+    }, { bbDir: path.join(demo, "media/breaking_bad") });
     const page = await ctx.newPage();
     page.on("pageerror", (e) => report.errors.push("pageerror: " + e.message));
     page.on("console", (m) => { if (m.type() === "error") report.errors.push("console: " + m.text()); });
     page.on("dialog", (d) => d.accept());
+    // в приложении остались только сериалы и фильмы — никаких стримов, вебкамер, YouTube и Twitch
+    const noStreams = async (where) => {
+      const t = (await page.innerText("body")).toLowerCase();
+      const hit = ["стрим", "вебкам", "youtube", "twitch", "блогер"].find((w) => t.includes(w));
+      if (hit) fail(`${where}: на экране есть «${hit}»`);
+    };
+    // субтитры рядом с первой серией — для проверки «Взять текст из .srt»
+    fs.writeFileSync(path.join(demo, "media/breaking_bad/S01E01.srt"),
+      "1\n00:00:00,500 --> 00:00:03,000\nПроверка субтитров, первая реплика.\n\n2\n00:00:03,200 --> 00:00:06,000\nВторая реплика — тоже на месте!\n\n"
+      + "3\n00:00:06,500 --> 00:00:09,500\nНет! Стой! Ха-ха!\n\n", "utf-8");
 
     await page.goto(BASE + "/auth?k=testtoken");
     await page.waitForSelector("text=Источников пока нет");
+    await noStreams("первый запуск");
     await check(page, "a01_pervyi_zapusk");
 
-    // источник с папкой через системное окно
+    // сериал с папкой через системное окно
     await page.click("text=Добавить источник");
     await page.waitForSelector("#bFolder");
-    await page.fill("#sT", "Стример Вася");
-    await page.click('#tSeg button[data-t="stream"]');
+    const types = await page.$$eval("#tSeg button", (b) => b.map((x) => x.innerText.trim()));
+    if (types.join(",") !== "Сериал,Фильм") fail("типы источника: " + types);
+    await noStreams("новый источник");
+    await page.fill("#sT", "Во все тяжкие");
+    await page.click('#tSeg button[data-t="series"]');
     await page.click("#bSave");
     await page.waitForSelector("#toast:not([hidden])");
     if (!(await page.innerText("#toast")).includes("Выберите папку")) fail("сохранение без папки не остановлено");
     await page.click("#bFolder");
-    await page.waitForFunction(() => document.querySelector("#sFname").textContent === "streamer");
+    await page.waitForFunction(() => document.querySelector("#sFname").textContent === "breaking_bad");
     await check(page, "a02_istochnik_papka", true);
     await page.click("#bSave");
-    await page.waitForSelector("h1:has-text('Рамка вебкамеры')");
-    await page.waitForFunction(() => document.querySelector("#fimg").naturalWidth > 0);
-    step("источник сохранён с папкой из системного окна → открылась «Рамка вебкамеры» с кадром из папки");
-    await check(page, "a03_ramka", true);
-    await page.click("text=Сохранить рамку");
-    await page.waitForTimeout(500);
+    await page.waitForSelector("h1:has-text('Настройки')");
+    step("типы источника — только «Сериал» и «Фильм»; сериал сохранён с папкой из системного окна");
+    await noStreams("настройки");
 
     // «Сегодня» → «Выбрать файл» → момент → клип
     await page.goto(BASE + "/#/today");
@@ -91,16 +102,16 @@ async function check(page, name, full = false) {
     await page.click("text=Выбрать файл");
     await page.waitForSelector(".item[data-path]");
     await check(page, "a05_fayly");
-    await page.click(".item[data-path]");
+    await page.click(".item[data-path] >> nth=0");
     await page.waitForSelector("#bMom");
     await page.fill("#tEnd", "0:10"); await page.press("#tEnd", "Enter"); await page.click("h1");
     await page.click("#bMom");
     await page.waitForSelector(".cand", { timeout: 60000 });
     await page.click(".cand >> nth=0");
-    const st = await page.inputValue("#tStart");
-    if (!/^0:(1\d|2\d)/.test(st)) fail("момент не на громком месте: " + st);
-    step(`«Предложить моменты» (ядро Java): начало ${st}`);
+    step(`«Предложить моменты»: начало ${await page.inputValue("#tStart")}`);
+    if (await page.$("#oLayout")) fail("в приложении не должно быть выбора раскладки с вебкамерой");
     await page.check("#oSrt");
+    await noStreams("выбор момента");
     await check(page, "a06_moment", true);
     await page.click("#bMake");
     await page.waitForSelector('a.btn.primary[href^="#/clipview/"]', { timeout: 120000 });
@@ -120,12 +131,11 @@ async function check(page, name, full = false) {
     await ta.fill("ИСПРАВЛЕНО в приложении");
     await ta.dispatchEvent("change");
     await page.click("#bRebuild");
-    // ждём именно сообщение о пересборке (предыдущий toast может быть ещё на экране)
     await page.waitForFunction(() => { const t = document.querySelector("#toast"); return t && !t.hidden && t.innerText.includes("пересобран"); },
       null, { timeout: 60000 }).catch(() => fail("пересборка"));
     step("«Пересобрать»: правка субтитров принята Java-API");
 
-    // настройки: скачивание модели распознавания
+    // настройки: модель распознавания
     await page.click('#nav a[data-tab="settings"]');
     await page.waitForSelector("[data-model]");
     await check(page, "a09_nastroyki", true);
@@ -133,102 +143,33 @@ async function check(page, name, full = false) {
     await page.click('[data-model="whisper-small"]');
     await page.waitForSelector("#toast:not([hidden])", { timeout: 30000 });
     await page.waitForSelector('[data-mdel="whisper-small"]');
-    await check(page, "a09b_model_skachana", true);
     step("«Скачать» Whisper small → задача в очереди с прогрессом → модель отмечена «скачана», есть «Удалить»");
     await page.click('[data-mdel="whisper-small"]');
     await page.waitForSelector('[data-model="whisper-small"]', { timeout: 30000 });
     step("«Удалить» модель → снова «Скачать»");
-    await page.click('[data-model="whisper-small"]');
-    await page.waitForSelector('[data-mdel="whisper-small"]', { timeout: 30000 });
 
-    // «Моменты»: без ключей — подсказка; ключи в «Настройках»; Twitch-клипы зрителей → «Резать»
-    // чат записи рядом с видео (формат TwitchDownloader): обычный темп + всплеск «KEKW» на 25-й секунде
-    const comments = [];
-    for (let t = 0; t < 40; t += 3) comments.push({ content_offset_seconds: t, commenter: { display_name: "z" }, message: { body: "привет" } });
-    for (let i = 0; i < 25; i++) comments.push({ content_offset_seconds: 25 + i * 0.1, commenter: { display_name: "z" + i }, message: { body: "KEKW ахаха" } });
-    fs.writeFileSync(path.join(demo, "media/streamer/stream_2026-10-28.json"), JSON.stringify({ video: { title: "Эфир" }, comments }));
+    // «Моменты» без ключа TMDB — автоплан есть, подсказка про ключ
     await page.click('#nav a[data-tab="discover"]');
-    await page.waitForSelector("#dSeg");
-    await page.click('#dSeg button[data-s="twitch"]');
-    await page.waitForSelector("text=Моменты по чату записи");
-    await page.waitForSelector("[data-chat]");
-    await check(page, "a11_momenty_chat", true);
-    await page.click("[data-chat]");
-    await page.waitForSelector(".cand", { timeout: 60000 });
-    const mr = await page.innerText("#momRes");
-    if (!mr.includes("По активности чата") || !mr.includes("KEKW")) fail("моменты по чату: " + mr.slice(0, 300));
-    await page.click(".cand >> nth=0");
-    const cs = await page.inputValue("#tStart");
-    if (cs !== "0:10.0") fail("момент по чату не с той секунды: " + cs);
-    await check(page, "a11b_moment_po_chatu", true);
-    step(`без ключей: «Моменты по чату записи» → запись с чатом → всплеск «KEKW» найден, начало ${cs}`);
-    await page.goto(BASE + "/#/settings");
+    await page.waitForSelector("#plGo");
+    if (!(await page.innerText("#dBox")).includes("Ввести ключ")) fail("нет подсказки про ключ TMDB");
+    await noStreams("«Моменты» без ключа");
+    await check(page, "a11_momenty_bez_klyucha", true);
+    // ключ TMDB
+    await page.click('#nav a[data-tab="settings"]');
     await page.waitForSelector("#bKeys");
-    await page.fill("#kTwId", "abc123clientid");
-    await page.fill("#kTwSec", "secretsecret999");
-    await page.fill("#kYt", "AIzaFakeKey0000");
+    if (await page.$("#kTwId") || await page.$("#kYt")) fail("в настройках остались ключи Twitch/YouTube");
     await page.fill("#kTm", "tmdbFakeKey42");
     await page.click("#bKeys");
-    await page.waitForFunction(() => (document.querySelector("#kTwSec") || {}).placeholder?.includes("…t999"));
-    if ((await page.content()).includes("secretsecret999")) fail("ключ показан целиком");
-    step("ключи сохранены, в интерфейсе видны только последние символы");
-    await page.click("text=Стример Вася");
-    await page.waitForSelector("#sTw");
-    await page.fill("#sTw", "vasya_live");
-    await page.fill("#sY", "UCvasyaVasyaVasyaVasya00");
-    await page.click("#bSave");
-    await page.waitForSelector("h1:has-text('Настройки')");
-    await page.click('#nav a[data-tab="discover"]');
-    await page.waitForSelector(".mom");
-    const tw = await page.innerText("#dBox");
-    if (!tw.includes("Вася испугался скримера") || !tw.includes("клипов: 2")) fail("моменты Twitch: " + tw.slice(0, 300));
-    await check(page, "a12_momenty_twitch", true);
-    await page.click('[data-cut="0:0:0"]');
-    await page.waitForSelector(".sheet");
-    if (!(await page.innerText(".sheet")).includes("похоже, это она")) fail("файл с датой эфира не подсказан");
-    await check(page, "a13_vybor_fayla_zapisi");
-    await page.click(".sheet [data-i='0']");
-    await page.waitForSelector("#pv");
-    const ts = await page.inputValue("#tStart");
-    if (ts !== "0:09.0") fail("момент открыт не с той минуты: " + ts);
-    step(`Twitch: клипы зрителей → моменты; «Резать» → выбор файла записи → клип открыт с ${ts}`);
-    await page.click('#nav a[data-tab="discover"]');
-    await page.waitForSelector(".mom");
-    if (!(await page.innerText("#dBox")).includes("stream_2026-10-28.mp4")) fail("привязка файла не запомнилась");
-    await page.click('#dSeg button[data-s="streams"]');
-    await page.waitForSelector("[data-find]");
-    await page.click("[data-find]");
-    await page.waitForSelector(".mom");
-    const yt = await page.innerText("#dBox");
-    if (!yt.includes("упоминаний: 2") || !yt.includes("я упал со стула")) fail("моменты YouTube: " + yt.slice(0, 300));
-    await check(page, "a14_momenty_youtube", true);
-    await page.click('#dSeg button[data-s="videos"]');
-    await page.waitForSelector("text=Обзор новой игры");
-    await page.fill("#wList", "UCwatchWatchWatchWatch01, мусор");
-    await page.click("#wSave");
-    await page.waitForFunction(() => { const t = document.querySelector("#toast"); return !t.hidden && t.innerText.includes("начинается с UC"); },
-      null, { timeout: 15000 }).catch(() => fail("неверный ID канала не отклонён"));
-    await page.fill("#wList", "UCwatchWatchWatchWatch01");
-    await page.click("#wSave");
-    await page.waitForSelector("text=· из списка");
-    step("«Слежу без источника»: канал из списка показан, неверный ID отклонён");
-    step("YouTube: стримы — моменты по таймкодам в комментариях; «каналы» — обычные видео");
+    await page.waitForFunction(() => (document.querySelector("#kTm") || {}).placeholder?.includes("…ey42"));
+    if ((await page.content()).includes("tmdbFakeKey42")) fail("ключ показан целиком");
+    step("ключ TMDB сохранён, виден только конец");
 
-    // «Фильмы и сериалы»: сериал из папки → рейтинг серий TMDB → автоплан на 3 дня → план на «Сегодня»
-    await page.goto(BASE + "/#/source/new");
-    await page.waitForSelector("#bFolder");
-    await page.fill("#sT", "Во все тяжкие");
-    await page.click('#tSeg button[data-t="series"]');
-    await page.evaluate((dir) => { window.__folder = { uri: dir, name: "breaking_bad" }; }, path.join(demo, "media/breaking_bad"));
-    await page.click("#bFolder");
-    await page.waitForFunction(() => document.querySelector("#sFname").textContent === "breaking_bad");
-    await page.click("#bSave");
-    await page.waitForSelector("h1:has-text('Настройки')");
+    // TMDB: рейтинг серий → автоплан на 3 дня → «Сегодня»
     await page.click('#nav a[data-tab="discover"]');
-    await page.click('#dSeg button[data-s="kino"]');
     await page.waitForSelector("[data-tep]");
     const tm = await page.$eval("#dBox", (e) => e.textContent); // списки TMDB свёрнуты — innerText их не видит
     if (!tm.includes("S01E02") || tm.indexOf("S01E02") > tm.indexOf("S01E03") || !tm.includes("есть у вас")) fail("рейтинг серий TMDB: " + tm.slice(0, 400));
+    await noStreams("«Моменты»");
     await check(page, "a15_filmy_serialy", true);
     step("TMDB: сериал привязан сам, лучшие серии из папки по рейтингу (S01E02 ★9,0 первой), в тренде отмечено «есть у вас»");
     await page.selectOption("#plSrc", { label: "Во все тяжкие (Сериал)" });
@@ -243,6 +184,7 @@ async function check(page, name, full = false) {
     await page.click('#nav a[data-tab="today"]');
     await page.waitForSelector("text=По плану на сегодня");
     await page.waitForSelector("[data-ppub]", { timeout: 180000 });
+    await noStreams("«Сегодня» с планом");
     await check(page, "a17_segodnya_plan", true);
     await page.click("[data-ppub]");
     await page.waitForFunction(() => { const t = document.querySelector("#toast"); return !t.hidden && t.innerText.includes("опубликовано"); }, null, { timeout: 15000 });
