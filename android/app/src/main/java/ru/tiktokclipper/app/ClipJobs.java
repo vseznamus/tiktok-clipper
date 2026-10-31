@@ -97,6 +97,20 @@ final class ClipJobs {
                     ctx.warn("Распознавание речи выключено в настройках. Клип сделан без субтитров.");
                 } else {
                     String model = AsrModels.pickModel(st, language, settings);
+                    if ("whisper-turbo".equals(model) && WhisperAsr.totalRam(e.ctx) < WhisperAsr.TURBO_MIN_RAM) {
+                        // turbo телефону не по силам — берём другую скачанную модель, а не падаем на каждом клипе
+                        String alt = null;
+                        for (String cand : new String[]{"whisper-small", "whisper-base", "ru-small", "en-small"}) {
+                            if (AsrModels.isInstalled(st, cand)) {
+                                alt = cand;
+                                break;
+                            }
+                        }
+                        ctx.warn(alt != null ? "Whisper turbo не хватает памяти телефона — распознал моделью «" + AsrModels.info(alt).name
+                                + "». Выберите её в «Настройки» → «Модель по умолчанию»."
+                                : "Whisper turbo не хватает памяти телефона. Скачайте Whisper small: «Настройки» → «Распознавание речи».");
+                        model = alt;
+                    }
                     AsrModels.ModelInfo mi = model == null ? null : AsrModels.info(model);
                     if (mi == null) {
                         ctx.warn("Модель распознавания речи не скачана: «Настройки» → «Распознавание речи» → «Скачать». "
@@ -105,7 +119,7 @@ final class ClipJobs {
                         long us0 = (long) (start * 1e6), us1 = (long) (end * 1e6);
                         if (AsrModels.WHISPER.equals(mi.engine)) {
                             JobQueue.Progress pr = ctx.stage(0.03, 0.55, "Распознаю речь (Whisper " + model.replace("whisper-", "") + ")");
-                            words = WhisperAsr.transcribe(e.ctx, st, uri, us0, us1, model, language, ctx.cancel, pr);
+                            words = WhisperAsr.transcribe(e.ctx, st, uri, us0, us1, model, language, ctx.cancel, pr, ctx::note);
                         } else {
                             JobQueue.Progress pr = ctx.stage(0.03, 0.40, "Распознаю речь (Vosk, " + model + ")");
                             words = VoskAsr.transcribe(e.ctx, st, uri, us0, us1, model, ctx.cancel, pr);

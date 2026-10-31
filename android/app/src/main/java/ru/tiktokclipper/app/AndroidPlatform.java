@@ -502,6 +502,7 @@ public class AndroidPlatform implements Platform {
             for (AsrModels.ModelInfo m : AsrModels.ALL) {
                 boolean inst = AsrModels.isInstalled(store, m.id);
                 boolean ok = !AsrModels.WHISPER.equals(m.engine) || whisperOk;
+                if ("whisper-turbo".equals(m.id) && WhisperAsr.totalRam(ctx) < WhisperAsr.TURBO_MIN_RAM) ok = false; // не хватит памяти
                 models.put(new JSONObject().put("id", m.id).put("name", m.name).put("note", m.note).put("engine", m.engine)
                         .put("size_mb", m.sizeMb).put("installed", inst).put("supported", ok)
                         .put("recommended", m.id.equals(AsrModels.DEFAULT)));

@@ -1009,7 +1009,7 @@ function appAsrCard(st, se) {
     <ul class="list">${models.map((m) => `<li><div class="item"><span class="t">${esc(m.name)}${m.recommended ? ' <span class="ok small">★ рекомендуем</span>' : ""}<br>
       <span class="muted small">${esc(m.note || "")}</span><br>
       <span class="small ${m.installed ? "ok" : "muted"}">${m.supported === false ? "не работает на этом телефоне" : m.installed ? "скачана" : "не скачана"}</span></span>
-      ${m.supported === false ? "" : m.installed ? `<button class="btn sm ghost" style="width:auto" data-mdel="${esc(m.id)}">Удалить</button>`
+      ${m.installed ? `<button class="btn sm ghost" style="width:auto" data-mdel="${esc(m.id)}">Удалить</button>` : m.supported === false ? ""
         : `<button class="btn sm" style="width:auto" data-model="${esc(m.id)}">Скачать</button>`}</div></li>`).join("")}</ul>
     <div id="mProg"></div>
     <label class="f" for="aB">Распознавание</label><select id="aB">

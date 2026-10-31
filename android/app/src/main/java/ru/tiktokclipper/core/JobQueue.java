@@ -52,6 +52,18 @@ public class JobQueue {
             if (listener != null) listener.onBusy(true, job.optString("title"), frac, job.optString("stage"));
         }
 
+        /** Только подпись этапа (прогресс не меняется): «Распознаю речь · 1:20». */
+        public void note(String stage) {
+            synchronized (lock) {
+                try {
+                    job.put("stage", stage);
+                } catch (JSONException ignored) {
+                }
+            }
+            save(false);
+            if (listener != null) listener.onBusy(true, job.optString("title"), job.optDouble("progress", 0), stage);
+        }
+
         /** Прогресс подэтапа: 0..1 отображается в диапазон lo..hi. */
         public Progress stage(final double lo, final double hi, String stage) {
             if (stage != null) progress(lo, stage);

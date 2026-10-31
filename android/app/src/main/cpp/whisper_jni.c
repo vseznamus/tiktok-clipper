@@ -49,6 +49,16 @@ Java_ru_tiktokclipper_app_WhisperAsr_nativeFree(JNIEnv *env, jclass cls, jlong h
     if (h) whisper_free((struct whisper_context *) (intptr_t) h);
 }
 
+/* Отмена из любого потока Java (кнопка «Отменить»): проверяется и посреди расчёта окна, а не только между окнами. */
+static volatile int g_abort = 0;
+
+JNIEXPORT void JNICALL
+Java_ru_tiktokclipper_app_WhisperAsr_nativeAbort(JNIEnv *env, jclass cls) {
+    (void) env;
+    (void) cls;
+    g_abort = 1;
+}
+
 typedef struct {
     JNIEnv *env;
     jobject listener;
@@ -60,6 +70,7 @@ static void progress_cb(struct whisper_context *ctx, struct whisper_state *st, i
     (void) ctx;
     (void) st;
     cb_data *d = ud;
+    if (g_abort) d->cancel = 1;
     if (d->cancel) return;
     if (!(*d->env)->CallBooleanMethod(d->env, d->listener, d->progress, pct)) d->cancel = 1;
     if ((*d->env)->ExceptionCheck(d->env)) {
@@ -74,7 +85,7 @@ static bool encoder_begin_cb(struct whisper_context *ctx, struct whisper_state *
 }
 
 static bool abort_cb(void *ud) {
-    return ((cb_data *) ud)->cancel != 0;
+    return ((cb_data *) ud)->cancel != 0 || g_abort != 0;
 }
 
 typedef struct {
@@ -128,6 +139,7 @@ Java_ru_tiktokclipper_app_WhisperAsr_nativeTranscribe(JNIEnv *env, jclass cls, j
     d.listener = listener;
     d.progress = (*env)->GetMethodID(env, (*env)->GetObjectClass(env, listener), "progress", "(I)Z");
     d.cancel = 0;
+    g_abort = 0;
     if (!d.progress) return NULL;
 
     const char *lg = (*env)->GetStringUTFChars(env, lang, NULL);
@@ -155,7 +167,7 @@ Java_ru_tiktokclipper_app_WhisperAsr_nativeTranscribe(JNIEnv *env, jclass cls, j
     int rc = whisper_full(ctx, p, samples, n);
     (*env)->ReleaseFloatArrayElements(env, pcm, samples, JNI_ABORT);
     (*env)->ReleaseStringUTFChars(env, lang, lg);
-    if (rc != 0 || d.cancel) return NULL;
+    if (rc != 0 || d.cancel || g_abort) return NULL;
 
     buf_t out = {0}, w = {0};
     char line[160];

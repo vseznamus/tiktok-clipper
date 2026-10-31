@@ -38,6 +38,9 @@ final class WhisperAsr {
 
     private static native byte[] nativeTranscribe(long handle, float[] pcm, String lang, int threads, Listener l);
 
+    /** Прервать идущее распознавание (из любого потока). */
+    private static native void nativeAbort();
+
     private static volatile Boolean libOk;
     private static String libError = "", sysInfo = "";
     /** Отдельная блокировка для загрузки библиотеки: распознавание (минуты) держит WhisperAsr.class,
@@ -168,11 +171,68 @@ final class WhisperAsr {
     /** Окно, которым режется длинный звук (чтобы не держать в памяти час аудио). */
     static final int CHUNK_SEC = 300;
 
+    /** Большой модели нужно много памяти: на телефоне с меньшим объёмом она не загрузится или будет «висеть». */
+    static final long TURBO_MIN_RAM = 7L * 1024 * 1024 * 1024;
+
+    static long totalRam(Context ctx) {
+        try {
+            android.app.ActivityManager am = (android.app.ActivityManager) ctx.getSystemService(Context.ACTIVITY_SERVICE);
+            android.app.ActivityManager.MemoryInfo mi = new android.app.ActivityManager.MemoryInfo();
+            am.getMemoryInfo(mi);
+            return mi.totalMem;
+        } catch (Exception e) {
+            return Long.MAX_VALUE;
+        }
+    }
+
+    static String mmss(long ms) {
+        long s = ms / 1000;
+        return (s / 60) + ":" + (s % 60 < 10 ? "0" : "") + (s % 60);
+    }
+
     static List<Subs.Word> transcribe(Context ctx, Store s, Uri uri, long startUs, long endUs, String modelId,
-                                      String language, final AtomicBoolean cancel, final JobQueue.Progress prog)
-            throws Exception {
+                                      String language, final AtomicBoolean cancel, final JobQueue.Progress prog,
+                                      final java.util.function.Consumer<String> note) throws Exception {
         if (!available(ctx)) throw new ApiError(500, unavailableReason());
         AsrModels.ModelInfo m = AsrModels.info(modelId);
+        if ("whisper-turbo".equals(modelId) && totalRam(ctx) < TURBO_MIN_RAM) {
+            throw new ApiError(400, "Whisper large-v3-turbo нужно от 8 ГБ памяти, а у телефона меньше — модель не потянет. "
+                    + "Выберите Whisper small: «Настройки» → «Распознавание речи» → «Модель по умолчанию».");
+        }
+        final String label = "Whisper " + modelId.replace("whisper-", "");
+        // наблюдатель: отмена доходит до Whisper сразу, а пока считается окно — подпись с таймером
+        final long t0 = System.currentTimeMillis();
+        final boolean[] finished = {false};
+        Thread watch = new Thread(() -> {
+            long lastNote = 0;
+            while (!finished[0]) {
+                try {
+                    Thread.sleep(400);
+                } catch (InterruptedException e) {
+                    return;
+                }
+                if (cancel.get()) nativeAbort();
+                long now = System.currentTimeMillis();
+                if (note != null && now - lastNote >= 2000 && !finished[0]) {
+                    lastNote = now;
+                    note.accept("Распознаю речь (" + label + ") · " + mmss(now - t0)
+                            + ("whisper-turbo".equals(modelId) ? " — большая модель, первое окно может идти несколько минут" : ""));
+                }
+            }
+        }, "whisper-watch");
+        watch.setDaemon(true);
+        watch.start();
+        try {
+            return transcribeLocked(ctx, s, uri, startUs, endUs, m, language, cancel, prog, note, label);
+        } finally {
+            finished[0] = true;
+            watch.interrupt();
+        }
+    }
+
+    private static List<Subs.Word> transcribeLocked(Context ctx, Store s, Uri uri, long startUs, long endUs, AsrModels.ModelInfo m,
+                                                    String language, final AtomicBoolean cancel, final JobQueue.Progress prog,
+                                                    java.util.function.Consumer<String> note, String label) throws Exception {
         final double total = Math.max(1, (endUs - startUs) / 1e6);
         final FloatBuf pcm = new FloatBuf(16000 * (int) Math.min(total + 1, CHUNK_SEC + 1));
         final List<Subs.Word> words = new ArrayList<>();
@@ -180,7 +240,9 @@ final class WhisperAsr {
         final int threads = threads();
         final double[] done = {0}; // секунд уже распознано
         synchronized (WhisperAsr.class) {
+            if (note != null && !m.id.equals(cachedId)) note.accept("Загружаю модель " + label + " в память…");
             final long h = model(s, m);
+            if (cancel.get()) throw new JobQueue.Cancelled();
             AudioPipe.pcm16kMonoFloat(ctx, uri, startUs, endUs, (data, n) -> {
                 pcm.add(data, n);
                 if (pcm.n >= 16000 * CHUNK_SEC) {
