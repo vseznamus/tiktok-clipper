@@ -20,7 +20,7 @@ import java.util.List;
  * Тот же формат, что и у Python-версии (sources.json, state.json, settings.json).
  */
 public class Store {
-    public static final List<String> SOURCE_TYPES = Arrays.asList("series", "movie");
+    public static final List<String> SOURCE_TYPES = Arrays.asList("stream");
     private static final Object LOCK = new Object();
     public final File dir;
 
@@ -156,6 +156,10 @@ public class Store {
     public static JSONObject fullProfile(JSONObject source) {
         JSONObject p = defaultProfile();
         if (source == null) return p;
+        try {
+            if ("stream".equals(source.optString("type"))) p.put("layout", "split"); // игра сверху, вебкамера снизу
+        } catch (JSONException ignored) {
+        }
         JSONObject own = source.optJSONObject("profile");
         if (own != null) {
             for (Iterator<String> it = own.keys(); it.hasNext(); ) {
@@ -221,7 +225,7 @@ public class Store {
                 }
                 for (String t : SOURCE_TYPES) if (!contains(clean, t)) clean.put(t);
                 cfg.put("type_order", clean);
-                // остались только сериалы и фильмы: источники других типов (стримы, блоги) убираются
+                // приложение для Twitch-стримеров: источники других типов убираются
                 JSONArray all = cfg.optJSONArray("sources"), kept = new JSONArray();
                 for (int i = 0; all != null && i < all.length(); i++) {
                     JSONObject s = all.optJSONObject(i);

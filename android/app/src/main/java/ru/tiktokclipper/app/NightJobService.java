@@ -22,7 +22,7 @@ import java.time.LocalTime;
 import ru.tiktokclipper.core.Store;
 
 /**
- * Ночная нарезка: Android сам запускает задачу, когда телефон на зарядке и им не пользуются (обычно ночью).
+ * Ночная нарезка записей стримеров: Android сам запускает задачу, когда телефон на зарядке и им не пользуются (обычно ночью).
  * Работает с 21:00 до 9:00 и не чаще раза в сутки. Утром — уведомление «Готово N клипов».
  */
 public class NightJobService extends JobService {
@@ -34,7 +34,7 @@ public class NightJobService extends JobService {
         JobScheduler js = (JobScheduler) c.getSystemService(Context.JOB_SCHEDULER_SERVICE);
         if (js == null) return;
         JSONObject n = settings.optJSONObject("night");
-        boolean on = n != null && n.optBoolean("enabled") && !n.optString("folder_uri").isEmpty();
+        boolean on = n != null && n.optBoolean("enabled");
         if (!on) {
             js.cancel(JOB_ID);
             return;

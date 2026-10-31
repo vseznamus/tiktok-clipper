@@ -20,7 +20,7 @@ import java.util.Locale;
  * другие приложения на телефоне не смогут управлять нарезкой.
  */
 public class Api implements MiniHttp.Handler {
-    public static final String VERSION = "2.1.0-android";
+    public static final String VERSION = "3.0.0-android";
     public static final String COOKIE = "clipper_k";
 
     private final Store store;
@@ -30,42 +30,14 @@ public class Api implements MiniHttp.Handler {
     public volatile LocalDate fixedToday; // для тестов
 
     public Api(Store store, Platform platform, JobQueue queue, String token) {
-        this(store, platform, queue, token, null);
-    }
-
-    public Api(Store store, Platform platform, JobQueue queue, String token, Net.Http http) {
         this.store = store;
         this.platform = platform;
         this.queue = queue;
         this.token = token;
-        this.tmdb = new Tmdb(store, http);
-        this.imdb = new ImdbRatings(store);
-        this.tmdb.imdb = imdb;
     }
-
-    public final ImdbRatings imdb;
-
-    /** Рейтинги IMDb старше недели или не скачаны — ставим загрузку в очередь (если её там ещё нет). */
-    private boolean ensureImdb() throws ApiError {
-        long age = imdb.ageDays();
-        if (age >= 0 && age < 7) return false;
-        JSONArray jobs = queue.list();
-        for (int i = 0; i < jobs.length(); i++) {
-            JSONObject j = jobs.optJSONObject(i);
-            if (j != null && "imdb".equals(j.optString("type")) && ("queued".equals(j.optString("status")) || "running".equals(j.optString("status")))) return true;
-        }
-        try {
-            queue.submit("imdb", new JSONObject(), "Загрузка рейтингов IMDb");
-            return true;
-        } catch (ApiError e) {
-            return false; // обработчика нет (например, в тестах) — без IMDb
-        }
-    }
-
-    public final Tmdb tmdb;
 
     /** Ключи сервисов не отдаются в интерфейс целиком — только последние 4 символа. */
-    static final String[] SECRET_KEYS = {"tmdb_key"};
+    static final String[] SECRET_KEYS = {};
 
     static JSONObject maskSecrets(JSONObject s) throws JSONException {
         for (String k : SECRET_KEYS) {
@@ -201,49 +173,15 @@ public class Api implements MiniHttp.Handler {
             case "upload":
                 throw new ApiError(400, "В приложении видео выбирается кнопкой «Выбрать видео на телефоне».");
             case "today": return todayView();
-            case "tmdb": {
-                boolean refresh = "1".equals(r.q("refresh", ""));
-                String what = seg.length > 1 ? seg[1] : "";
-                if (what.equals("lists") && m.equals("GET")) return MiniHttp.Response.json(tmdb.lists(refresh));
-                if (what.equals("pick") && m.equals("GET")) {
-                    boolean loading = ensureImdb();
-                    JSONObject res = tmdb.pick(r.q("region", "world"), r.q("type", "tv"), r.q("kind", "popular"),
-                            Integer.parseInt(r.q("page", "1")), refresh);
-                    return MiniHttp.Response.json(res.put("imdb_loading", loading && !imdb.loaded()));
-                }
-                if (what.equals("ru") && m.equals("GET")) {
-                    return MiniHttp.Response.json(tmdb.russian(r.q("type", "tv"), r.q("kind", "popular"), Integer.parseInt(r.q("page", "1")), refresh));
-                }
-                if (what.equals("search") && m.equals("GET")) return MiniHttp.Response.json(new JSONObject().put("results", tmdb.search(r.q("q", ""))));
-                if (what.equals("source") && seg.length == 3 && m.equals("GET")) {
-                    JSONObject src = store.getSource(seg[2]);
-                    if (src == null) throw new ApiError(404, "Источник не найден");
-                    JSONArray fs;
-                    try {
-                        fs = platform.listFiles(src);
-                    } catch (Exception e) {
-                        fs = new JSONArray();
-                    }
-                    return MiniHttp.Response.json(tmdb.forSource(src, fs, refresh));
-                }
-                if (what.equals("link") && m.equals("POST")) {
-                    JSONObject b = r.json();
-                    if (store.getSource(b.optString("source_id")) == null) throw new ApiError(404, "Источник не найден");
-                    long id = b.optLong("tmdb_id", 0);
-                    String ty = b.optString("tmdb_type");
-                    if (id > 0 && !ty.equals("tv") && !ty.equals("movie")) throw new ApiError(400, "Неверный тип");
-                    store.updateSourceFields(b.optString("source_id"), id > 0 ? new JSONObject().put("tmdb_id", id).put("tmdb_type", ty)
-                            : new JSONObject().put("tmdb_id", JSONObject.NULL).put("tmdb_type", JSONObject.NULL));
-                    return ok();
-                }
-                break;
-            }
             case "night": {
                 java.io.File nf = new java.io.File(store.dir, "night.json");
                 if (seg.length == 1 && m.equals("GET")) {
                     JSONObject st = Store.readObject(nf), n = store.settings().optJSONObject("night");
                     JSONArray done = st.optJSONArray("done");
-                    return MiniHttp.Response.json(new JSONObject().put("settings", n != null ? n : new JSONObject())
+                    int streamers = 0;
+                    JSONArray srcs = store.sources().getJSONArray("sources");
+                    for (int i = 0; i < srcs.length(); i++) if (!srcs.getJSONObject(i).optString("folder_uri").isEmpty()) streamers++;
+                    return MiniHttp.Response.json(new JSONObject().put("settings", n != null ? n : new JSONObject()).put("streamers", streamers)
                             .put("last_run", st.opt("last_run")).put("last_files", st.optJSONArray("last_files"))
                             .put("done_count", done != null ? done.length() : 0));
                 }
@@ -253,30 +191,6 @@ public class Api implements MiniHttp.Handler {
                     st.remove("last_run");
                     Store.writeJson(nf, st);
                     return ok();
-                }
-                break;
-            }
-            case "plan": {
-                if (seg.length == 1 && m.equals("GET")) return MiniHttp.Response.json(new JSONObject().put("items", planView()));
-                if (seg.length == 2 && seg[1].equals("clear") && m.equals("POST")) {
-                    Planner.save(store, new JSONArray());
-                    return ok();
-                }
-                if (seg.length == 2 && m.equals("DELETE")) {
-                    Planner.remove(store, seg[1]);
-                    return ok();
-                }
-                if (seg.length == 3 && m.equals("POST")) {
-                    JSONObject it = Planner.get(store, seg[1]);
-                    if (it == null) throw new ApiError(404, "Пункт плана не найден");
-                    if (seg[2].equals("clip")) {
-                        Planner.update(store, seg[1], new JSONObject().put("job_id", Planner.submitClip(queue, platform, it)));
-                        return ok();
-                    }
-                    if (seg[2].equals("published")) {
-                        markPlanPublished(it);
-                        return MiniHttp.Response.json(new JSONObject().put("ok", true).put("message", "Отмечено: опубликовано"));
-                    }
                 }
                 break;
             }
@@ -426,17 +340,8 @@ public class Api implements MiniHttp.Handler {
                     JSONObject cur = store.settings().optJSONObject("night");
                     JSONObject o = cur != null ? new JSONObject(cur.toString()) : new JSONObject();
                     if (n.has("enabled")) o.put("enabled", n.optBoolean("enabled"));
-                    if (n.has("folder_uri")) o.put("folder_uri", n.optString("folder_uri")).put("folder_name", n.optString("folder_name"));
-                    if (n.has("per_night")) o.put("per_night", Math.max(1, Math.min(10, n.optInt("per_night", 3))));
-                    if (o.optBoolean("enabled") && o.optString("folder_uri").isEmpty()) throw new ApiError(400, "Выберите папку для ночной нарезки");
+                    if (n.has("per_recording")) o.put("per_recording", Math.max(1, Math.min(5, n.optInt("per_recording", 3))));
                     patch.put(k, o);
-                    break;
-                }
-                case "tmdb_key": {
-                    String v = b.optString(k, "").trim();
-                    if (v.length() > 600 || !v.matches("[A-Za-z0-9_\\-.]*")) throw new ApiError(400, "Ключ содержит лишние символы — скопируйте его заново");
-                    patch.put(k, v);
-                    tmdb.clearCache();
                     break;
                 }
                 default:
@@ -452,62 +357,9 @@ public class Api implements MiniHttp.Handler {
     /** Вызывается после сохранения настроек (на телефоне — перепланировать ночную нарезку). */
     public volatile Runnable settingsChanged;
 
-    /** План с состоянием клипов: в очереди / собирается / готов / ошибка. */
-    JSONArray planView() throws JSONException {
-        JSONArray all = Planner.load(store), out = new JSONArray();
-        for (int i = 0; i < all.length(); i++) {
-            JSONObject it = new JSONObject(all.getJSONObject(i).toString());
-            String jid = it.optString("job_id");
-            String status = "none";
-            if (!jid.isEmpty()) {
-                JSONObject j = queue.get(jid);
-                if (j == null) status = "none";
-                else {
-                    status = j.optString("status");
-                    it.put("progress", j.optDouble("progress", 0)).put("stage", j.optString("stage")).put("error", j.optString("error"));
-                    JSONObject res = j.optJSONObject("result");
-                    if (res != null && !res.optString("clip_id").isEmpty()) {
-                        JSONObject meta = loadClip(res.optString("clip_id"));
-                        if (meta != null) it.put("clip_id", meta.optString("id")).put("filename", meta.optString("filename"));
-                        else status = "none"; // клип удалён
-                    }
-                }
-            }
-            it.put("clip_status", status);
-            out.put(it);
-        }
-        return out;
-    }
-
-    private void markPlanPublished(JSONObject it) throws Exception {
-        Planner.update(store, it.getString("id"), new JSONObject().put("published", true));
-        String cid = it.optString("clip_id");
-        if (cid.isEmpty()) {
-            JSONArray pv = planView();
-            for (int i = 0; i < pv.length(); i++) {
-                JSONObject v = pv.getJSONObject(i);
-                if (v.optString("id").equals(it.getString("id"))) cid = v.optString("clip_id");
-            }
-        }
-        JSONObject clip = cid.isEmpty() ? null : loadClip(cid);
-        if (clip != null) {
-            clip.put("published", true);
-            saveClip(clip);
-        }
-        synchronized (Store.stateLock()) {
-            JSONObject st = store.loadState();
-            JSONObject uf = st.optJSONObject("used_files");
-            if (uf == null) st.put("used_files", uf = new JSONObject());
-            JSONArray a = uf.optJSONArray(it.getString("source_id"));
-            if (a == null) uf.put(it.getString("source_id"), a = new JSONArray());
-            if (!Store.contains(a, it.getString("file"))) a.put(it.getString("file"));
-            store.saveState(st);
-        }
-    }
-
     private JSONObject cleanSource(JSONObject b) throws JSONException {
         JSONObject s = new JSONObject();
-        for (String k : new String[]{"id", "type", "title", "folder", "folder_uri", "enabled", "profile", "tmdb_id", "tmdb_type"}) {
+        for (String k : new String[]{"id", "type", "title", "folder", "folder_uri", "twitch_login", "enabled", "profile"}) {
             if (b.has(k) && !(k.equals("id") && b.isNull(k))) s.put(k, b.get(k));
         }
         return s;
@@ -551,15 +403,6 @@ public class Api implements MiniHttp.Handler {
         }
         JSONObject out = new JSONObject();
         out.put("today", d.toString());
-        JSONArray pv = planView(), planToday = new JSONArray(), planNext = new JSONArray();
-        for (int i = 0; i < pv.length(); i++) {
-            JSONObject it = pv.getJSONObject(i);
-            LocalDate pd = LocalDate.parse(it.getString("date"));
-            if (it.optBoolean("published")) continue;
-            if (!pd.isAfter(d)) planToday.put(it.put("overdue", pd.isBefore(d)));
-            else if (planNext.length() < 6) planNext.put(it);
-        }
-        out.put("plan_today", planToday).put("plan_next", planNext);
         if (posts.isEmpty()) {
             out.put("empty", true);
             return MiniHttp.Response.json(out);
@@ -675,13 +518,6 @@ public class Api implements MiniHttp.Handler {
             case "night":
                 title = "Ночная нарезка";
                 break;
-            case "plan": {
-                JSONObject src = store.getSource(p.optString("source_id"));
-                if (src == null) throw new ApiError(400, "Выберите источник");
-                p.put("start", p.optString("start", "").isEmpty() ? today().toString() : p.getString("start"));
-                title = "План на " + Math.max(1, Math.min(7, p.optInt("count", 3))) + " дн.: " + src.optString("title");
-                break;
-            }
             case "model":
                 title = ("delete".equals(p.optString("action")) ? "Удаление модели распознавания: " : "Скачивание модели распознавания: ")
                         + p.optString("model");

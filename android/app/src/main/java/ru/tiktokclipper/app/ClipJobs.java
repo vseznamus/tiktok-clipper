@@ -22,10 +22,10 @@ import java.util.UUID;
 
 import ru.tiktokclipper.core.Api;
 import ru.tiktokclipper.core.ApiError;
+import ru.tiktokclipper.core.ChatMoments;
 import ru.tiktokclipper.core.JobQueue;
 import ru.tiktokclipper.core.Moments;
 import ru.tiktokclipper.core.Mp4FastStart;
-import ru.tiktokclipper.core.Planner;
 import ru.tiktokclipper.core.Store;
 import ru.tiktokclipper.core.Subs;
 
@@ -149,7 +149,9 @@ final class ClipJobs {
             meta.put("banner_plate", p.optBoolean("banner_plate", false));
         }
         if (p.optBoolean("night")) meta.put("night", true);
-        meta.put("caption", ru.tiktokclipper.core.Captions.make(file));
+        meta.put("caption", src != null && "stream".equals(src.optString("type"))
+                ? ru.tiktokclipper.core.Captions.stream(src.optString("title"), src.optString("twitch_login"), file)
+                : ru.tiktokclipper.core.Captions.make(file));
         meta.put("profile", prof);
         meta.put("words", Subs.wordsToJson(inClip));
         meta.put("lines", Subs.linesToJson(lines));
@@ -320,69 +322,99 @@ final class ClipJobs {
         JSONArray jobs = new JSONArray();
         for (JSONObject c : best) {
             JSONObject cp = ru.tiktokclipper.core.Template.clipParams(tpl, file, c.getDouble("start"), c.getDouble("end"), srt);
+            if (!p.optString("source_id").isEmpty()) cp.put("source_id", p.getString("source_id")); // рамка вебкамеры стримера
             String name = file.substring(file.lastIndexOf('/') + 1);
             jobs.put(e.queue.submit("clip", cp, "Клип: " + name + " (" + Api.fmt(c.getDouble("start")) + ")").getString("id"));
         }
         return new JSONObject().put("clip_jobs", jobs);
     }
 
-    /** Ночная нарезка: следующие N файлов из выбранной папки → по лучшему моменту из каждого → клипы по шаблону. */
+    /**
+     * Ночная нарезка: у каждого стримера с папкой — самая свежая ещё не нарезанная запись эфира,
+     * из неё N лучших моментов (по чату, если файл чата рядом, иначе по звуку) → клипы по шаблону с рамкой вебкамеры стримера.
+     */
     JSONObject night(JobQueue.Ctx ctx) throws Exception {
         JSONObject settings = e.store.settings(), n = settings.optJSONObject("night");
-        if (n == null || n.optString("folder_uri").isEmpty()) throw new ApiError(400, "Папка для ночной нарезки не выбрана");
-        int per = Math.max(1, Math.min(10, n.optInt("per_night", 3)));
+        int per = Math.max(1, Math.min(5, n != null ? n.optInt("per_recording", 3) : 3));
         int length = settings.optInt("moment_len", 30);
-        ctx.progress(0.01, "Смотрю папку «" + n.optString("folder_name") + "»");
-        JSONArray files = e.platform.listFiles(e.platform.nightSource());
+        JSONArray srcs = e.store.sources().getJSONArray("sources");
+        java.util.List<JSONObject> streamers = new java.util.ArrayList<>();
+        for (int i = 0; i < srcs.length(); i++) {
+            JSONObject s = srcs.getJSONObject(i);
+            if (s.optBoolean("enabled", true) && !s.optString("folder_uri").isEmpty()) streamers.add(s);
+        }
+        if (streamers.isEmpty()) throw new ApiError(400, "Добавьте стримера с папкой записей на вкладке «Стримеры»");
         File stFile = new File(e.store.dir, "night.json");
         JSONObject st = Store.readObject(stFile);
         JSONArray done = st.optJSONArray("done");
         if (done == null) done = new JSONArray();
-        java.util.List<String> todo = new java.util.ArrayList<>();
-        for (int i = 0; i < files.length() && todo.size() < per; i++) {
-            String path = files.getJSONObject(i).optString("path");
-            if (!Store.contains(done, path)) todo.add(path);
-        }
         JSONObject tpl = ru.tiktokclipper.core.Template.of(settings);
         JSONArray jobs = new JSONArray(), names = new JSONArray();
-        for (int i = 0; i < todo.size(); i++) {
+        for (int k = 0; k < streamers.size(); k++) {
             ctx.check();
-            String file = todo.get(i), name = file.substring(file.indexOf('/') + 1);
-            double lo = 0.03 + 0.9 * i / todo.size(), hi = 0.03 + 0.9 * (i + 1) / todo.size();
-            ctx.progress(lo, "Ищу момент: " + name + " (" + (i + 1) + " из " + todo.size() + ")");
+            JSONObject src = streamers.get(k);
+            double lo = 0.02 + 0.9 * k / streamers.size(), hi = 0.02 + 0.9 * (k + 1) / streamers.size();
+            ctx.progress(lo, "Смотрю записи: " + src.optString("title"));
+            JSONArray files;
+            try {
+                files = e.platform.listFiles(src);
+            } catch (ApiError err) {
+                ctx.warn(src.optString("title") + ": " + err.getMessage());
+                continue;
+            }
+            JSONObject newest = null;
+            for (int i = 0; i < files.length(); i++) {
+                JSONObject f = files.getJSONObject(i);
+                if (Store.contains(done, f.optString("path"))) continue;
+                if (newest == null || f.optDouble("mtime") > newest.optDouble("mtime")) newest = f;
+            }
+            if (newest == null) continue;
+            String file = newest.getString("path");
             try {
                 JSONObject res = analyze(ctx, file, length, lo, hi);
-                java.util.List<JSONObject> best = ru.tiktokclipper.core.Template.best(res.optJSONArray("candidates"), 1, 0);
-                if (!best.isEmpty()) {
-                    JSONObject cp = ru.tiktokclipper.core.Template.clipParams(tpl, file, best.get(0).getDouble("start"), best.get(0).getDouble("end"),
-                            e.platform.sidecarSrt(file) != null).put("night", true);
-                    jobs.put(e.queue.submit("clip", cp, "Ночной клип: " + name).getString("id"));
-                    names.put(name);
+                java.util.List<JSONObject> best = ru.tiktokclipper.core.Template.best(res.optJSONArray("candidates"), per, Math.max(90, 3.0 * length));
+                boolean srt = e.platform.sidecarSrt(file) != null;
+                for (JSONObject c : best) {
+                    JSONObject cp = ru.tiktokclipper.core.Template.clipParams(tpl, file, c.getDouble("start"), c.getDouble("end"), srt)
+                            .put("source_id", src.optString("id")).put("night", true);
+                    jobs.put(e.queue.submit("clip", cp, "Ночной клип: " + src.optString("title")).getString("id"));
                 }
+                names.put(src.optString("title") + " — " + newest.optString("name"));
             } catch (ApiError err) {
-                ctx.warn(name + ": " + err.getMessage());
+                ctx.warn(newest.optString("name") + ": " + err.getMessage());
             }
             done.put(file);
         }
         st.put("done", done).put("last_run", java.time.LocalDate.now().toString()).put("last_jobs", jobs).put("last_files", names);
         Store.writeJson(stFile, st);
-        if (todo.isEmpty()) ctx.warn("Новых видео в папке нет — всё уже нарезано.");
+        if (names.length() == 0) ctx.warn("Новых записей нет — всё уже нарезано.");
         return new JSONObject().put("clip_jobs", jobs).put("files", names);
     }
 
-    /** Автоплан: N моментов на N дней (core/Planner). */
-    JSONObject plan(JobQueue.Ctx ctx) throws Exception {
-        return Planner.run(ctx, e.store, e.platform, api.tmdb, this::analyze, e.queue, java.time.LocalDate.now());
-    }
-
     /**
-     * Моменты в файле — офлайн: по звуку, репликам (.srt) и сменам планов.
+     * Моменты в файле: по чату записи, если он лежит рядом, иначе офлайн по звуку, репликам (.srt) и сменам планов.
      * Прогресс задачи — в пределах lo…hi.
      */
     JSONObject analyze(JobQueue.Ctx ctx, String file, int length, double lo, double hi) throws Exception {
         final double span = hi - lo;
         Uri uri = e.platform.resolve(file);
         JSONObject info = e.platform.probeUri(uri);
+        // рядом лежит чат записи — моменты по реакции зрителей
+        Uri chatUri = e.platform.sidecarChat(file);
+        if (chatUri != null) {
+            ctx.progress(lo + 0.1 * span, "Читаю чат записи");
+            ChatMoments.Chat chat;
+            try (java.io.InputStream in = e.ctx.getContentResolver().openInputStream(chatUri)) {
+                chat = ChatMoments.read(in);
+            }
+            ctx.check();
+            if (chat.n > 0) {
+                ctx.progress(lo + 0.8 * span, "Ищу всплески в чате (" + chat.n + " сообщений)");
+                return new JSONObject().put("file", file).put("length", length).put("source", "chat").put("chat_messages", chat.n)
+                        .put("candidates", ChatMoments.find(chat, info.optDouble("duration"), length, 8)).put("speech", true);
+            }
+            ctx.warn("Файл чата рядом с видео не удалось прочитать (формат не распознан) — ищу по звуку.");
+        }
         if (!info.optBoolean("has_audio")) throw new ApiError(400, "В файле нет звука — искать громкие моменты не по чему");
         long size = e.platform.uriSource(uri).size();
         String key = sha1(file + "|" + size);

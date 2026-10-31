@@ -27,14 +27,6 @@ public class DesktopServer {
         h.put("rebuild", ctx -> pf.rebuild(ctx, api[0]));
         h.put("moments", pf::moments);
         JobQueue[] qa = new JobQueue[1];
-        h.put("imdb", ctx -> api[0].imdb.job(ctx, url -> {
-            // имитация title.ratings.tsv.gz: рейтинги для id из fakeNet
-            String tsv = "tconst\taverageRating\tnumVotes\ntt0000101\t9.5\t2300000\ntt0000102\t8.6\t60000\ntt0000103\t8.9\t40000\ntt0000104\t7.8\t12000\n";
-            ByteArrayOutputStream bo = new ByteArrayOutputStream();
-            try (java.util.zip.GZIPOutputStream gz = new java.util.zip.GZIPOutputStream(bo)) { gz.write(tsv.getBytes(StandardCharsets.UTF_8)); }
-            try { Thread.sleep(1500); } catch (InterruptedException ignored) { }
-            return new ByteArrayInputStream(bo.toByteArray());
-        }));
         // «Быстрый клип» и ночная нарезка — та же логика, что в ClipJobs (поиск моментов здесь — ffmpeg)
         h.put("auto", ctx -> {
             String file = ctx.params.getString("file");
@@ -42,71 +34,49 @@ public class DesktopServer {
             JSONObject res = pf.analyze(ctx, file, len, 0.05, 0.9);
             List<JSONObject> best = Template.best(res.optJSONArray("candidates"), Math.max(1, ctx.params.optInt("count", 1)), 90);
             JSONArray jobs = new JSONArray();
-            for (JSONObject c : best) jobs.put(qa[0].submit("clip", Template.clipParams(Template.of(store.settings()), file,
-                    c.getDouble("start"), c.getDouble("end"), pf.sidecarSrt(file) != null), "Клип").getString("id"));
+            for (JSONObject c : best) {
+                JSONObject cp = Template.clipParams(Template.of(store.settings()), file, c.getDouble("start"), c.getDouble("end"), pf.sidecarSrt(file) != null);
+                if (!ctx.params.optString("source_id").isEmpty()) cp.put("source_id", ctx.params.getString("source_id"));
+                jobs.put(qa[0].submit("clip", cp, "Клип").getString("id"));
+            }
             return new JSONObject().put("clip_jobs", jobs);
         });
         h.put("night", ctx -> {
-            JSONObject n = store.settings().optJSONObject("night");
-            JSONArray files = pf.listFiles(new JSONObject().put("id", "_night").put("folder_uri", n.optString("folder_uri")));
+            int per = store.settings().optJSONObject("night") != null ? store.settings().getJSONObject("night").optInt("per_recording", 3) : 3;
             File stf = new File(store.dir, "night.json");
             JSONObject st = Store.readObject(stf);
             JSONArray done = st.optJSONArray("done") != null ? st.getJSONArray("done") : new JSONArray();
-            JSONArray jobs = new JSONArray(), names = new JSONArray();
-            for (int i = 0; i < files.length() && jobs.length() < n.optInt("per_night", 3); i++) {
-                String f = files.getJSONObject(i).getString("path");
-                if (Store.contains(done, f)) continue;
+            JSONArray jobs = new JSONArray(), names = new JSONArray(), srcs = store.sources().getJSONArray("sources");
+            for (int k = 0; k < srcs.length(); k++) {
+                JSONObject src = srcs.getJSONObject(k);
+                if (src.optString("folder_uri").isEmpty()) continue;
+                JSONArray files = pf.listFiles(src);
+                JSONObject newest = null;
+                for (int i = 0; i < files.length(); i++) {
+                    JSONObject f = files.getJSONObject(i);
+                    if (!Store.contains(done, f.getString("path")) && (newest == null || f.optDouble("mtime") > newest.optDouble("mtime"))) newest = f;
+                }
+                if (newest == null) continue;
+                String f = newest.getString("path");
                 JSONObject res = pf.analyze(ctx, f, store.settings().optInt("moment_len", 30), 0.1, 0.9);
-                JSONObject c = res.getJSONArray("candidates").getJSONObject(0);
-                jobs.put(qa[0].submit("clip", Template.clipParams(Template.of(store.settings()), f, c.getDouble("start"), c.getDouble("end"), false)
-                        .put("night", true), "Ночной клип").getString("id"));
-                names.put(f.substring(f.indexOf('/') + 1));
+                for (JSONObject c : Template.best(res.getJSONArray("candidates"), per, 10)) {
+                    jobs.put(qa[0].submit("clip", Template.clipParams(Template.of(store.settings()), f, c.getDouble("start"), c.getDouble("end"), false)
+                            .put("source_id", src.getString("id")).put("night", true), "Ночной клип").getString("id"));
+                }
+                names.put(src.optString("title") + " — " + newest.getString("name"));
                 done.put(f);
             }
             Store.writeJson(stf, st.put("done", done).put("last_run", java.time.LocalDate.now().toString()).put("last_files", names));
             return new JSONObject().put("clip_jobs", jobs).put("files", names);
         });
-        h.put("plan", ctx -> Planner.run(ctx, store, pf, api[0].tmdb, pf::analyze, qa[0], java.time.LocalDate.now()));
         h.put("model", pf::model);
         JobQueue q = new JobQueue(store.jobsFile(), h);
         qa[0] = q;
-        api[0] = new Api(store, pf, q, TOKEN, DesktopServer::fakeNet);
+        api[0] = new Api(store, pf, q, TOKEN);
         q.start();
         MiniHttp http = new MiniHttp(api[0]);
         System.out.println("PORT " + http.start(port));
         Thread.currentThread().join();
-    }
-
-    /** Имитация TMDB для вкладки «Моменты» (в тесте нет интернета и ключа). */
-    static Net.Resp fakeNet(String url, Map<String, String> h, String body) {
-        String j;
-        if (url.contains("api.themoviedb.org")) {
-            if (url.contains("/external_ids")) {
-                String id = url.contains("/tv/1396/") ? "tt0000101" : url.contains("/tv/81/") ? "tt0000103" : url.contains("/tv/63770/") ? "tt0000104"
-                        : url.contains("/movie/603/") ? "tt0000102" : "";
-                j = "{\"imdb_id\":" + (id.isEmpty() ? "null" : "\"" + id + "\"") + "}";
-            } else if (url.contains("/discover/")) {
-                boolean tv = url.contains("/discover/tv");
-                String[][] r = tv ? new String[][]{{"63770", "Кухня", "2012-11-12", "7.9"}, {"81", "Ликвидация", "2007-12-04", "8.5"}}
-                        : new String[][]{{"20992", "Брат", "1997-05-17", "8.0"}, {"5", "Москва слезам не верит", "1980-02-11", "7.9"}};
-                StringBuilder b = new StringBuilder("{\"page\":1,\"total_pages\":1,\"results\":[");
-                for (int i = 0; i < r.length; i++) {
-                    if (i > 0) b.append(',');
-                    b.append("{\"id\":").append(r[i][0]).append(tv ? ",\"name\":" : ",\"title\":").append(JSONObject.quote(r[i][1]))
-                            .append(tv ? ",\"first_air_date\":\"" : ",\"release_date\":\"").append(r[i][2]).append("\",\"vote_average\":").append(r[i][3])
-                            .append(",\"vote_count\":500,\"overview\":\"Описание для теста.\"}");
-                }
-                j = b.append("]}").toString();
-            } else if (url.contains("/trending/")) j = "{\"results\":[{\"id\":1396,\"media_type\":\"tv\",\"name\":\"Во все тяжкие\",\"original_name\":\"Breaking Bad\",\"first_air_date\":\"2008-01-20\",\"vote_average\":8.9,\"vote_count\":15000},"
-                    + "{\"id\":603,\"media_type\":\"movie\",\"title\":\"Матрица\",\"release_date\":\"1999-03-31\",\"vote_average\":8.2,\"vote_count\":26000}]}";
-            else if (url.contains("/top_rated")) j = "{\"results\":[{\"id\":1396,\"name\":\"Во все тяжкие\",\"title\":\"Во все тяжкие\",\"vote_average\":8.9}]}";
-            else if (url.contains("/search/")) j = "{\"results\":[{\"id\":1396,\"media_type\":\"tv\",\"name\":\"Во все тяжкие\",\"original_name\":\"Breaking Bad\",\"vote_average\":8.9}]}";
-            else if (url.contains("/tv/1396/season/1")) j = "{\"episodes\":[{\"episode_number\":1,\"name\":\"Пилот\",\"vote_average\":7.5,\"vote_count\":50},"
-                    + "{\"episode_number\":2,\"name\":\"Кот в мешке\",\"vote_average\":9.0,\"vote_count\":50},{\"episode_number\":3,\"name\":\"…и мешок в реке\",\"vote_average\":8.0,\"vote_count\":50}]}";
-            else if (url.contains("/tv/1396")) j = "{\"name\":\"Во все тяжкие\",\"first_air_date\":\"2008-01-20\",\"vote_average\":8.9,\"vote_count\":15000,\"seasons\":[{\"season_number\":1}]}";
-            else return new Net.Resp(404, "{}");
-        } else return new Net.Resp(404, "{}");
-        return new Net.Resp(200, j);
     }
 
     static String sh(String... cmd) throws Exception {
@@ -147,6 +117,7 @@ public class DesktopServer {
                 if (!f.getName().matches("(?i).*\\.(mp4|mkv|mov|webm)$")) continue;
                 JSONObject o = new JSONObject().put("name", f.getName()).put("path", (src == null ? "_picked" : src.getString("id")) + "/" + f.getName())
                         .put("size", f.length()).put("mtime", f.lastModified() / 1000.0);
+                if (chatFile(f) != null) o.put("chat", true);
                 out.put(o);
             }
             return out;
@@ -185,7 +156,16 @@ public class DesktopServer {
                 if (s.getString("codec_type").equals("audio")) o.put("has_audio", true);
             }
             o.put("has_srt", sidecarSrt(id) != null);
+            o.put("has_chat", chatFile(f) != null);
             return o;
+        }
+
+        static File chatFile(File video) {
+            String n = video.getName(), stem = n.contains(".") ? n.substring(0, n.lastIndexOf('.')) : n;
+            File[] fs = video.getParentFile().listFiles();
+            if (fs == null) return null;
+            for (File c : fs) if (ChatMoments.isChatFor(c.getName(), stem)) return c;
+            return null;
         }
 
         public byte[] frameJpeg(String id, double t, int w) throws Exception {
@@ -271,7 +251,9 @@ public class DesktopServer {
                     .put("start", s).put("end", e).put("mirror", p.optBoolean("mirror", true)).put("subtitles", true)
                     .put("sub_style", "classic").put("lines", Subs.linesToJson(lines)).put("version", 0).put("published", false)
                     .put("filename", "2026-10-30_120000_clip.mp4").put("gallery_path", "Movies/TikTokClips/2026-10-30_120000_clip.mp4")
-                    .put("media_uri", "content://media/external/video/media/1").put("caption", Captions.make(file));
+                    .put("media_uri", "content://media/external/video/media/1").put("caption", store.getSource(p.optString("source_id", "")) != null
+                            ? Captions.stream(store.getSource(p.optString("source_id")).optString("title"), store.getSource(p.optString("source_id")).optString("twitch_login"), file)
+                            : Captions.make(file));
             if (p.optBoolean("night")) meta.put("night", true);
             for (String k : new String[]{"banner", "banner_pos", "banner_size", "banner_chroma", "banner_plate"}) if (p.has(k)) meta.put(k, p.get(k));
             ctx.progress(0.5, "Собираю видео");
@@ -305,6 +287,15 @@ public class DesktopServer {
         JSONObject analyze(JobQueue.Ctx ctx, String fileId, int length, double lo, double hi) throws Exception {
             ctx.params.put("file", fileId).put("length", length);
             File f = resolve(ctx.params.getString("file"));
+            File chatF = chatFile(f);
+            if (chatF != null) {
+                ChatMoments.Chat chat;
+                try (InputStream in = new FileInputStream(chatF)) { chat = ChatMoments.read(in); }
+                double dur = probe(ctx.params.getString("file")).getDouble("duration");
+                return new JSONObject().put("file", ctx.params.getString("file")).put("length", ctx.params.optInt("length", 10)).put("source", "chat")
+                        .put("chat_messages", chat.n).put("candidates", ChatMoments.find(chat, dur, ctx.params.optInt("length", 10), 8)).put("speech", true);
+            }
+
             String out = sh("ffmpeg", "-hide_banner", "-nostdin", "-i", f.getPath(), "-vn", "-af",
                     "aresample=8000,asetnsamples=n=8000:p=0,astats=metadata=1:reset=1,ametadata=mode=print:key=lavfi.astats.Overall.RMS_level:file=-",
                     "-f", "null", "-");

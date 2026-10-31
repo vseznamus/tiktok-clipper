@@ -46,126 +46,104 @@ async function check(page, name, full = false) {
     step("без ключа сессии API отвечает 401");
     browser = await chromium.launch();
     const ctx = await browser.newContext({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 2, isMobile: true, hasTouch: true });
-    // картинка для баннера (PNG 4×2) — кладём в папку «выбранных» файлов
+    // картинка для баннера (PNG 4×2) и чат записи рядом с эфиром (формат TwitchDownloader): всплеск «KEKW» на 25-й секунде
     const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAQAAAACCAYAAAB/qH1jAAAAFklEQVR42mP8z8Dwn4GBgYGJAQoYGQAkpAMBGPyO5AAAAABJRU5ErkJggg==", "base64");
     fs.writeFileSync(path.join(demo, "media/matrix/banner.png"), png);
-    await ctx.addInitScript(() => {
+    const comments = [];
+    for (let t = 0; t < 40; t += 3) comments.push({ content_offset_seconds: t, commenter: { display_name: "z" }, message: { body: "привет" } });
+    for (let i = 0; i < 25; i++) comments.push({ content_offset_seconds: 25 + i * 0.1, commenter: { display_name: "z" + i }, message: { body: "KEKW ахаха" } });
+    fs.writeFileSync(path.join(demo, "media/streamer/stream_2026-10-28.json"), JSON.stringify({ video: { title: "Эфир" }, comments }));
+    await ctx.addInitScript((d) => {
       window.__calls = [];
       window.AndroidApp = {
-        pickFolder: () => { window.__calls.push("pickFolder"); setTimeout(() => window.onFolderPicked({ uri: window.__nightDir, name: "breaking_bad" }), 50); },
-        copyText: (t) => window.__calls.push("copy:" + t),
+        pickFolder: () => { window.__calls.push("pickFolder"); setTimeout(() => window.onFolderPicked({ uri: d, name: "streamer" }), 50); },
         pickVideo: () => { window.__calls.push("pickVideo"); setTimeout(() => window.onVideoPicked("_picked/old_rip.mp4"), 50); },
         pickImage: () => { window.__calls.push("pickImage"); setTimeout(() => window.onImagePicked("_img/banner.png"), 50); },
+        copyText: (t) => window.__calls.push("copy:" + t),
         shareClip: (id) => window.__calls.push("share:" + id),
         openClip: (id) => window.__calls.push("open:" + id),
         version: () => "test",
       };
-    });
-    await ctx.addInitScript((d) => { window.__nightDir = d; }, path.join(demo, "media/breaking_bad"));
+    }, path.join(demo, "media/streamer"));
     const page = await ctx.newPage();
     page.on("pageerror", (e) => report.errors.push("pageerror: " + e.message));
     page.on("console", (m) => { if (m.type() === "error") report.errors.push("console: " + m.text()); });
     page.on("dialog", (d) => d.accept());
     const noJunk = async (where) => {
       const t = (await page.innerText("body")).toLowerCase();
-      const hit = ["стрим", "вебкам", "youtube", "twitch", "блогер", "расписан", "источник"].find((w) => t.includes(w));
+      const hit = ["фильм", "сериал", "tmdb", "imdb", "youtube", "подборка", "расписан"].find((w) => t.includes(w));
       if (hit) fail(`${where}: на экране есть «${hit}»`);
     };
+    const toastHas = (txt, timeout = 15000) => page.waitForFunction((x) => { const t = document.querySelector("#toast"); return !t.hidden && t.innerText.includes(x); }, txt, { timeout });
 
-    // первый запуск: три вкладки, открыта «Подборка», без ключа — подсказка
+    // первый запуск: три вкладки, открыт «Клип»
     await page.goto(BASE + "/auth?k=testtoken");
-    await page.waitForSelector("text=Нужен ключ TMDB");
+    await page.waitForSelector("#srcSel");
     const tabs = await page.$$eval("#nav a", (a) => a.filter((x) => !x.hidden && x.offsetParent).map((x) => x.innerText.trim()));
-    if (tabs.join(",") !== "Подборка,Клип,Настройки") fail("вкладки: " + tabs);
-    await noJunk("«Подборка» без ключа");
-    await check(page, "a01_podborka_bez_klyucha");
-    step("в приложении три вкладки: Подборка, Клип, Настройки; без ключа — подсказка");
+    if (tabs.join(",") !== "Стримеры,Клип,Настройки") fail("вкладки: " + tabs);
+    await noJunk("первый запуск");
+    await check(page, "a01_klip_pusto");
+    step("в приложении три вкладки: Стримеры, Клип, Настройки; нигде нет фильмов, сериалов, TMDB");
 
-    // настройки: только нужное
-    await page.click('#nav a[data-tab="settings"]');
-    await page.waitForSelector("#bKeys");
-    await noJunk("«Настройки»");
-    await check(page, "a02_nastroyki", true);
-    await page.click('[data-model="whisper-small"]');
-    await page.waitForSelector('[data-mdel="whisper-small"]', { timeout: 30000 });
-    step("«Настройки»: без источников и расписания; Whisper small скачивается");
-    await page.fill("#kTm", "tmdbFakeKey42");
-    await page.click("#bKeys");
-    await page.waitForFunction(() => (document.querySelector("#kTm") || {}).placeholder?.includes("…ey42"));
-    step("ключ TMDB сохранён, виден только конец");
+    // стример: имя, Twitch-логин, папка записей, рамка вебкамеры
+    await page.click('#nav a[data-tab="streamers"]');
+    await page.waitForSelector("text=Добавить стримера");
+    await page.click("text=Добавить стримера");
+    await page.waitForSelector("#bFolder");
+    await page.fill("#sT", "Стример Вася");
+    await page.fill("#sTw", "vasya_live");
+    await page.click("#bFolder");
+    await page.waitForFunction(() => document.querySelector("#sFname").textContent === "streamer");
+    await noJunk("новый стример");
+    await check(page, "a02_novyi_strimer", true);
+    await page.click("#bSave");
+    await page.waitForSelector("h1:has-text('Рамка вебкамеры')");
+    await page.waitForFunction(() => document.querySelector("#fimg").naturalWidth > 0);
+    await check(page, "a03_ramka", true);
+    await page.click("text=Сохранить рамку");
+    await page.waitForSelector("text=twitch.tv/vasya_live");
+    if (!(await page.innerText("#app")).includes("рамка задана")) fail("рамка вебкамеры не сохранилась");
+    await check(page, "a04_strimery", true);
+    step("«Стримеры»: имя, Twitch-логин, папка записей → «Рамка вебкамеры» → карточка «рамка задана», ссылка на Twitch");
 
-    // «Подборка»: мир → Россия, популярное → лучшее по IMDb
-    await page.click('#nav a[data-tab="pick"]');
-    await page.waitForSelector(".ruitem");
-    await page.waitForFunction(() => document.querySelector("#pkBox").innerText.includes("IMDb ★"), null, { timeout: 30000 });
-    const w = await page.innerText("#pkBox");
-    if (!w.includes("Во все тяжкие") || !w.includes("IMDb ★ 9,5")) fail("мир: " + w.slice(0, 300));
-    await noJunk("«Подборка»");
-    await check(page, "a03_podborka_mir", true);
-    step("«Подборка» → Мир → Сериалы → Популярное: рейтинги IMDb загрузились в фоне и показаны");
-    await page.click('#pkRegion button[data-v="ru"]');
-    await page.waitForFunction(() => document.querySelector("#pkBox") && document.querySelector("#pkBox").innerText.includes("Ликвидация"));
-    await page.click('#pkKind button[data-v="best"]');
-    await page.waitForSelector(".ruitem");
-    const ru = await page.innerText("#pkBox");
-    if (ru.indexOf("Ликвидация") > ru.indexOf("Кухня") || !ru.includes("IMDb ★ 8,9")) fail("Россия, лучшее по IMDb: " + ru.slice(0, 300));
-    await check(page, "a04_podborka_rossiya", true);
-    step("«Подборка» → Россия → Лучшее по IMDb: «Ликвидация» (IMDb 8,9) выше «Кухни» (7,8)");
-    await page.click('#pkType button[data-v="movie"]');
-    await page.waitForFunction(() => document.querySelector("#pkBox") && document.querySelector("#pkBox").innerText.includes("Брат"));
-    step("«Подборка» → Россия → Фильмы");
-
-    // «Клип»: видео с телефона → автоподбор → баннер → сделать клип
+    // клип из записи: моменты по чату, «экран + вебкамера», баннер, шаблон
     await page.click('#nav a[data-tab="clip"]');
-    await page.waitForSelector("#pickV");
-    await noJunk("«Клип»");
-    await check(page, "a05_klip_pusto");
-    await page.click("#pickV");
-    await page.waitForSelector("#pv");
-    if (!(await page.innerText("#fileBox")).includes("old_rip.mp4")) fail("выбранное видео не показано");
-    await page.fill("#tEnd", "0:08"); await page.press("#tEnd", "Enter"); await page.click("h1");
+    await page.waitForSelector("#srcSel");
+    await page.selectOption("#srcSel", { label: "Стример Вася" });
+    await page.waitForSelector(".item[data-path]");
+    if (!(await page.innerText("#fileBox")).includes("есть чат")) fail("запись с чатом не отмечена");
+    await page.click(".item[data-path] >> nth=0");
+    await page.waitForSelector("#bMom");
+    if ((await page.inputValue("#oLayout")) !== "split") fail("раскладка стримера должна быть «экран + вебкамера»");
     await page.click("#bMom");
     await page.waitForSelector(".cand", { timeout: 60000 });
+    const mr = await page.innerText("#momRes");
+    if (!mr.includes("По активности чата") || !mr.includes("KEKW")) fail("моменты по чату: " + mr.slice(0, 300));
     await page.click(".cand >> nth=0");
-    step(`«Выбрать видео на телефоне» → «Автоподбор моментов»: начало ${await page.inputValue("#tStart")}`);
+    if ((await page.inputValue("#tStart")) !== "0:10.0") fail("момент по чату не с той секунды: " + (await page.inputValue("#tStart")));
+    step("«Клип» → Стример Вася → запись «есть чат» → «Автоподбор»: всплеск «KEKW», начало 0:10; раскладка «экран + вебкамера»");
     await page.click("#bnPick");
     await page.waitForSelector("#bnImg");
-    await page.click('#bnPos button[data-v="bottom"]');
-    await page.fill("#bnSize", "50"); await page.dispatchEvent("#bnSize", "input");
-    // ширина 50% безопасной зоны = 420 px из 1080; картинка 4×2 → высота 210; низ — на границе зоны (1440)
-    await page.waitForFunction(() => { const i = document.querySelector("#bnImg"); return i && Math.abs(parseFloat(i.style.width) - 38.89) < 0.1; });
-    const geo = await page.evaluate(() => ({ top: parseFloat(document.querySelector("#bnImg").style.top), sub: parseFloat(document.querySelector("#bnSub").style.top),
-      plate: document.querySelector("#bnPlate").checked }));
-    if (Math.abs(geo.top - 64.06) > 0.2) fail("положение баннера в предпросмотре: " + geo.top);
-    if (!(geo.sub < geo.top - 3)) fail("субтитры должны быть над баннером: " + JSON.stringify(geo));
-    if (!geo.plate) fail("подложка по умолчанию должна быть включена");
-    await noJunk("«Клип» с видео");
-    await check(page, "a06_klip_banner", true);
-    step("баннер «Снизу», 50%: в безопасной зоне TikTok, субтитры поднялись над баннером, тёмная подложка включена");
+    await page.click('#bnPos button[data-v="top"]');
+    await noJunk("«Клип» с записью");
+    await check(page, "a05_klip_zapis", true);
     await page.click("#bTpl");
-    await page.waitForFunction(() => { const t = document.querySelector("#toast"); return !t.hidden && t.innerText.includes("Шаблон сохранён"); });
-    step("«Сохранить как шаблон»: настройки и баннер запомнены для «Быстрого клипа» и ночной нарезки");
+    await toastHas("Шаблон сохранён");
     await page.click("#bMake");
     await page.waitForSelector("#jobsBox .progress", { timeout: 15000 });
     const jobs = await page.evaluate(() => fetch("/api/jobs").then((r) => r.json()));
     const cj = jobs.find((j) => j.type === "clip");
-    if (!cj || cj.params.banner !== "_img/banner.png" || cj.params.banner_pos !== "bottom" || cj.params.banner_size !== 0.5 || cj.params.banner_plate !== true)
-      fail("параметры баннера: " + JSON.stringify(cj && cj.params));
-    await check(page, "a07_klip_sobiraetsya");
+    if (!cj || cj.params.layout !== "split" || cj.params.banner_pos !== "top" || cj.params.source_id !== "strimer_vasya") fail("параметры клипа: " + JSON.stringify(cj && cj.params));
     await page.waitForSelector("#bShare", { timeout: 120000 });
-    step("«Сделать клип»: прогресс прямо на вкладке «Клип», баннер передан в сборку, по готовности открылся клип");
     const cap = await page.innerText("#app");
-    if (!cap.includes("Подпись для TikTok") || !cap.includes("#фильм")) fail("подпись: " + cap.slice(0, 300));
-    await page.click("#bCap");
+    if (!cap.includes("Стример Вася · эфир 28.10") || !cap.includes("#vasya_live") || !cap.includes("#твич")) fail("подпись: " + cap.slice(0, 400));
     await page.click("#bShare");
-    await page.click("#bOpen");
     const calls = await page.evaluate(() => window.__calls);
-    if (!calls.some((c) => c.startsWith("share:")) || !calls.some((c) => c.startsWith("open:")) || !calls.some((c) => c.startsWith("copy:") && c.includes("#кино")))
-      fail("мост не вызван: " + calls);
-    await check(page, "a08_gotovyi_klip", true);
-    step("готовый клип: подпись с хэштегами («Скопировать подпись»), «Поделиться», «Открыть в галерее»");
+    if (!calls.some((c) => c.startsWith("share:"))) fail("«Поделиться» не вызвано: " + calls);
+    await check(page, "a06_gotovyi_klip", true);
+    step("«Сделать клип» → готовый клип с подписью «Стример Вася · эфир 28.10 #vasya_live #твич …» → «Поделиться»");
 
-    // «Быстрый клип»: лучший момент + шаблон (с баннером) одной кнопкой
+    // «Быстрый клип» с рамкой стримера
     await page.click('#nav a[data-tab="clip"]');
     await page.waitForSelector("#bQuick");
     await page.click("#bQuick");
@@ -173,29 +151,32 @@ async function check(page, name, full = false) {
     const jobs2 = await page.evaluate(() => fetch("/api/jobs").then((r) => r.json()));
     const auto = jobs2.find((j) => j.type === "auto" && j.status === "done");
     const qc = auto && jobs2.find((j) => j.id === auto.result.clip_jobs[0]);
-    if (!qc || qc.params.banner_pos !== "bottom" || qc.params.banner_plate !== true) fail("быстрый клип не по шаблону: " + JSON.stringify(qc && qc.params));
-    step("«⚡ Быстрый клип»: одна кнопка → лучший момент → клип по шаблону (с баннером) → открылся готовый клип");
+    if (!qc || qc.params.source_id !== "strimer_vasya" || qc.params.banner_pos !== "top") fail("быстрый клип: " + JSON.stringify(qc && qc.params));
+    step("«⚡ Быстрый клип»: лучший момент → клип по шаблону с баннером и вебкамерой стримера");
 
-    // ночная нарезка: папка, 2 клипа, «Нарезать сейчас»
+    // ночная нарезка по папкам стримеров
     await page.click('#nav a[data-tab="settings"]');
-    await page.waitForSelector("#ngPick");
-    await page.click("#ngPick");
-    await page.waitForFunction(() => document.querySelector("#ngFolder").textContent === "breaking_bad");
+    await page.waitForSelector("#ngNow");
+    await noJunk("«Настройки»");
     await page.check("#ngOn");
     await page.fill("#ngN", "2");
     await page.click("#ngSave");
-    await page.waitForFunction(() => { const t = document.querySelector("#toast"); return !t.hidden && t.innerText.includes("включена"); });
-    await check(page, "a10_nochnaya_narezka", true);
+    await toastHas("включена");
+    await check(page, "a07_nastroyki", true);
     await page.click("#ngNow");
-    await page.waitForSelector("#jobsBox .progress", { timeout: 15000 });
-    await page.waitForFunction(() => document.querySelectorAll("#readyBox .item").length >= 4 && !document.querySelector("#jobsBox .progress"), null, { timeout: 180000 });
-    const ready = await page.innerText("#readyBox");
-    if ((ready.match(/нарезан ночью/g) || []).length !== 2) fail("ночные клипы: " + ready);
-    step("ночная нарезка: папка «breaking_bad», 2 клипа за раз → «Нарезать сейчас» → 2 клипа с пометкой 🌙 в «Готовых клипах»");
-    await page.click('#nav a[data-tab="clip"]');
-    await page.waitForSelector("#readyBox .item");
-    await check(page, "a09_klip_gotovye", true);
-    step("«Клип» → «Готовые клипы»: собранный клип в списке");
+    await page.waitForSelector("#readyBox");
+    await page.waitForFunction(() => document.querySelector("#readyBox") && document.querySelector("#readyBox").innerText.includes("нарезан ночью")
+      && !document.querySelector("#jobsBox .progress"), null, { timeout: 180000 });
+    await check(page, "a08_gotovye_klipy", true);
+    step("ночная нарезка: самая свежая запись стримера → клипы с пометкой 🌙 в «Готовых клипах»");
+
+    // видео с телефона
+    await page.selectOption("#srcSel", "");
+    await page.waitForSelector("#pickV");
+    await page.click("#pickV");
+    await page.waitForSelector("#pv");
+    if (!(await page.innerText("#fileBox")).includes("old_rip.mp4")) fail("выбранное видео не показано");
+    step("«Видео с телефона» → «Выбрать видео на телефоне» → видео открыто");
 
     if (report.errors.length) fail("ошибки в консоли: " + report.errors.join(" | "));
     report.ok = true;

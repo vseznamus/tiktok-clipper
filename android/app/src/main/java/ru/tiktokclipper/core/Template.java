@@ -70,7 +70,7 @@ public final class Template {
         JSONObject p = new JSONObject().put("source_id", JSONObject.NULL).put("file", file).put("start", start).put("end", end)
                 .put("mirror", tpl.optBoolean("mirror", true)).put("subtitles", tpl.optBoolean("subtitles", true))
                 .put("sub_style", tpl.optString("sub_style", "classic")).put("language", tpl.optString("language", "auto"))
-                .put("layout", "single").put("sub_source", tpl.optBoolean("use_srt", true) && hasSrt ? "srt" : "asr");
+                .put("sub_source", tpl.optBoolean("use_srt", true) && hasSrt ? "srt" : "asr"); // раскладка — из профиля стримера
         JSONObject b = tpl.optJSONObject("banner");
         if (b != null && !b.optString("path").isEmpty()) {
             p.put("banner", b.getString("path")).put("banner_pos", b.optString("pos", "top")).put("banner_size", b.optDouble("size", 0.8))

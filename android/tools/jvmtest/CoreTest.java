@@ -291,162 +291,99 @@ public class CoreTest {
                 String ck = "clipper_k=sekret-klyuch-123";
                 check(getHost(port, "/api/config", ck, "evil.com").startsWith("HTTP/1.1 403"), "чужой Host");
                 check(get(base + "/api/today", ck, null)[1].contains("\"empty\":true"), "пустое расписание");
-                post(base + "/api/sources", ck, "{\"type\":\"series\",\"title\":\"Во все тяжкие\"}");
-                post(base + "/api/sources", ck, "{\"type\":\"movie\",\"title\":\"Матрица\"}");
+                post(base + "/api/sources", ck, "{\"type\":\"stream\",\"title\":\"Стример Вася\",\"twitch_login\":\"vasya\"}");
+                post(base + "/api/sources", ck, "{\"type\":\"stream\",\"title\":\"Стример Петя\"}");
                 String t = get(base + "/api/today", ck, null)[1];
-                check(t.contains("Во все тяжкие") && t.contains("\"pos\":1"), t);
+                check(t.contains("Стример Вася") && t.contains("\"pos\":1"), t);
                 post(base + "/api/schedule/publish", ck, "{}");
                 t = get(base + "/api/today", ck, null)[1];
                 check(t.contains("\"pos\":2"), t);
                 String[] r = get(base + "/media/x/a.mp4", ck, "bytes=1000-1999");
                 check(r[0].equals("206") && r[3].equals("1000"), "Range: " + r[0] + " " + r[3]);
                 check(get(base + "/", ck, null)[1].contains("<html"), "index.html");
-                store.saveSettings(new JSONObject().put("tmdb_key", "SuperSecret123456"));
-                String cfg = get(base + "/api/config", ck, null)[1];
-                check(!cfg.contains("SuperSecret123456") && cfg.contains("\"tmdb_key_set\":true") && cfg.contains("…3456"), "ключ не отдаётся целиком");
-                String[] bad = put(base + "/api/settings", ck, "{\"tmdb_key\":\"ключ с пробелами\"}");
-                check(bad[0].equals("400"), "кривой ключ отклоняется: " + bad[0]);
+                String[] bad = post2(base + "/api/sources", ck, "{\"type\":\"series\",\"title\":\"Сериал\"}");
+                check(bad[0].equals("400"), "в приложении для стримеров сериал не создаётся: " + bad[0]);
             } finally {
                 http.stop();
             }
         });
 
-        // ---------------------------------------------------------------- TMDB, оценка сцен, автоплан
+        // ---------------------------------------------------------------- моменты по чату записи
+        test("чат: TwitchDownloader JSON — всплески находятся, обычный темп не мешает", () -> {
+            StringBuilder j = new StringBuilder("{\"streamer\":{\"name\":\"vasya\"},\"video\":{\"title\":\"Эфир\"},\"comments\":[");
+            List<double[]> ts = new ArrayList<>();
+            Random rnd = new Random(5);
+            for (double t = 0; t < 7200; t += 3 + rnd.nextDouble() * 2) ts.add(new double[]{t, 0});
+            for (int i = 0; i < 70; i++) ts.add(new double[]{1800 + i * 0.2, 1}); // KEKW
+            for (int i = 0; i < 35; i++) ts.add(new double[]{4000 + i * 0.4, 2}); // ахаха
+            ts.sort((a, b) -> Double.compare(a[0], b[0]));
+            for (int i = 0; i < ts.size(); i++) {
+                double[] x = ts.get(i);
+                String msg = x[1] == 1 ? "KEKW KEKW" : x[1] == 2 ? "ахахах \\u0430\\\"" : "привет всем, как дела";
+                if (i > 0) j.append(',');
+                j.append("{\"_id\":\"").append(i).append("\",\"content_offset_seconds\":").append(String.format(Locale.ROOT, "%.3f", x[0]))
+                        .append(",\"commenter\":{\"display_name\":\"Зритель").append(i % 50).append("\",\"name\":\"z\"},")
+                        .append("\"message\":{\"body\":\"").append(msg).append("\",\"fragments\":[{\"text\":\"x\",\"emoticon\":null}],\"user_badges\":[]}}");
+            }
+            j.append("],\"embeddedData\":null}");
+            byte[] data = j.toString().getBytes(StandardCharsets.UTF_8);
+            ChatMoments.Chat chat = ChatMoments.read(new ByteArrayInputStream(data));
+            check(chat.n == ts.size(), "сообщений " + chat.n + " из " + ts.size());
+            check(chat.text[0].equals("привет всем, как дела"), "текст: " + chat.text[0]);
+            JSONArray c = ChatMoments.find(chat, 7300, 30, 8);
+            JSONObject a = c.getJSONObject(0), b = c.getJSONObject(1);
+            check(Math.abs(a.getDouble("start") - 1785) <= 3 && a.getJSONArray("reasons").toString().contains("KEKW"), a.toString());
+            check(Math.abs(b.getDouble("start") - 3985) <= 6, b.toString());
+            check(a.getDouble("score") == 1.0 && a.getDouble("end") - a.getDouble("start") == 30, a.toString());
+            // gzip — так же
+            ByteArrayOutputStream bo = new ByteArrayOutputStream();
+            try (java.util.zip.GZIPOutputStream gz = new java.util.zip.GZIPOutputStream(bo)) { gz.write(data); }
+            check(ChatMoments.read(new ByteArrayInputStream(bo.toByteArray())).n == ts.size(), "gzip");
+        });
+        test("чат: текстовый лог, повтор чата YouTube, массив с time_in_seconds", () -> {
+            String txt = "\uFEFF[0:00:05] vasya: привет\n[0:01:00] petya: ахах\nмусор без времени\n[1:02:03] kolya: KEKW\n";
+            ChatMoments.Chat t = ChatMoments.read(new ByteArrayInputStream(txt.getBytes(StandardCharsets.UTF_8)));
+            check(t.n == 3 && t.t[2] == 3723 && t.text[1].equals("ахах"), "текст: " + t.n + " " + t.t[2] + " " + t.text[1]);
+            String utc = "[2026-10-28 23:59:58 UTC] a: раз\n[2026-10-29 00:00:10 UTC] b: два\n";
+            ChatMoments.Chat u = ChatMoments.read(new ByteArrayInputStream(utc.getBytes(StandardCharsets.UTF_8)));
+            check(u.n == 2 && u.t[0] == 0 && u.t[1] == 12, "UTC через полночь: " + u.t[1]);
+            String clock = "[23:59:50] a: старт\n[23:59:55] b: ахах\n[00:00:20] c: после полуночи\n";
+            ChatMoments.Chat ck = ChatMoments.read(new ByteArrayInputStream(clock.getBytes(StandardCharsets.UTF_8)));
+            check(ck.n == 3 && ck.t[0] == 0 && ck.t[1] == 5 && ck.t[2] == 30, "лог по часам: " + ck.t[1] + " " + ck.t[2]);
+            String yt = "{\"replayChatItemAction\":{\"actions\":[{\"addChatItemAction\":{\"item\":{\"liveChatTextMessageRenderer\":{\"message\":{\"runs\":[{\"text\":\"ору 😂\"}]},"
+                    + "\"authorName\":{\"simpleText\":\"Ник\"}}}}}],\"videoOffsetTimeMsec\":\"65500\"}}\n"
+                    + "{\"replayChatItemAction\":{\"actions\":[],\"videoOffsetTimeMsec\":\"70000\"}}\n";
+            ChatMoments.Chat y = ChatMoments.read(new ByteArrayInputStream(yt.getBytes(StandardCharsets.UTF_8)));
+            check(y.n == 2 && Math.abs(y.t[0] - 65.5) < 1e-3 && y.text[0].equals("ору 😂"), "YouTube: " + y.n + " " + y.t[0] + " " + y.text[0]);
+            String arr = "[{\"message\":\"гол!!!\",\"author\":{\"name\":\"x\"},\"time_in_seconds\":12.5},{\"time_in_seconds\":-3,\"message\":\"до начала\"}]";
+            ChatMoments.Chat ar = ChatMoments.read(new ByteArrayInputStream(arr.getBytes(StandardCharsets.UTF_8)));
+            check(ar.n == 1 && ar.t[0] == 12.5f && ar.text[0].equals("гол!!!"), "массив: " + ar.n);
+            check(ChatMoments.read(new ByteArrayInputStream("просто текст".getBytes(StandardCharsets.UTF_8))).n == 0, "не чат");
+            check(ChatMoments.find(new ChatMoments.Chat(), 100, 30, 8).length() == 0, "пустой чат");
+        });
+        test("чат: какой файл считается чатом к видео", () -> {
+            check(ChatMoments.isChatFor("stream_2026-10-28.json", "stream_2026-10-28"), "json");
+            check(ChatMoments.isChatFor("stream_2026-10-28.chat.txt", "stream_2026-10-28"), "chat.txt");
+            check(ChatMoments.isChatFor("Stream_2026-10-28_chat.json.gz", "stream_2026-10-28"), "gz, регистр");
+            check(!ChatMoments.isChatFor("stream_2026-10-28.srt", "stream_2026-10-28"), "srt — не чат");
+            check(!ChatMoments.isChatFor("stream_2026-10-29.json", "stream_2026-10-28"), "чужая дата");
+        });
+
+        test("подпись для клипа со стрима", () -> {
+            String a = Captions.stream("Стример Вася", "Vasya_Live", "vasya/stream_2026-10-28.mp4");
+            check(a.startsWith("Стример Вася · эфир 28.10\n") && a.contains("#стримервася") && a.contains("#vasya_live") && a.contains("#твич"), a);
+            check(Captions.stream("", null, "x.mp4").startsWith("Стрим\n"), "без имени");
+        });
+
+        // ---------------------------------------------------------------- серии, оценка сцен
         test("серия из имени файла: S01E05, 1x05, «2 сезон 3 серия», «серия 7»", () -> {
-            check(Arrays.equals(Tmdb.episodeOf("Breaking.Bad.S01E05.1080p.mkv"), new int[]{1, 5}), "S01E05");
-            check(Arrays.equals(Tmdb.episodeOf("bb s2 e10.mp4"), new int[]{2, 10}), "s2 e10");
-            check(Arrays.equals(Tmdb.episodeOf("Lost 3x07.avi"), new int[]{3, 7}), "3x07");
-            check(Arrays.equals(Tmdb.episodeOf("Во все тяжкие 2 сезон 3 серия.mp4"), new int[]{2, 3}), "2 сезон 3 серия");
-            check(Arrays.equals(Tmdb.episodeOf("Сезон 4 - Серия 12.mkv"), new int[]{4, 12}), "Сезон 4 - Серия 12");
-            check(Arrays.equals(Tmdb.episodeOf("серия 7.mp4"), new int[]{1, 7}), "серия 7");
-            check(Tmdb.episodeOf("Матрица 1999 1080p.mkv") == null, "фильм — не серия");
-        });
-        final Net.Http tmdbNet = (url, h, body) -> {
-            check(url.startsWith("https://api.themoviedb.org/3/") && url.contains("api_key=k123"), url);
-            if (url.contains("/trending/all/week")) return new Net.Resp(200, "{\"results\":[{\"id\":1396,\"media_type\":\"tv\",\"name\":\"Во все тяжкие\",\"original_name\":\"Breaking Bad\",\"first_air_date\":\"2008-01-20\",\"vote_average\":8.9,\"vote_count\":15000},{\"id\":5,\"media_type\":\"person\",\"name\":\"x\"},{\"id\":603,\"media_type\":\"movie\",\"title\":\"Матрица\",\"original_title\":\"The Matrix\",\"release_date\":\"1999-03-31\",\"vote_average\":8.2,\"vote_count\":26000}]}");
-            if (url.contains("/tv/top_rated")) return new Net.Resp(200, "{\"results\":[{\"id\":1396,\"name\":\"Во все тяжкие\",\"original_name\":\"Breaking Bad\",\"vote_average\":8.9}]}");
-            if (url.contains("/movie/top_rated")) return new Net.Resp(200, "{\"results\":[{\"id\":238,\"title\":\"Крёстный отец\",\"vote_average\":8.7}]}");
-            if (url.contains("/search/multi")) {
-                if (url.contains("%D0%94%D0%BE%D0%BA%D1%82%D0%BE%D1%80")) // «Доктор» — несколько вариантов
-                    return new Net.Resp(200, "{\"results\":[{\"id\":1,\"media_type\":\"tv\",\"name\":\"Доктор Хаус\"},{\"id\":2,\"media_type\":\"tv\",\"name\":\"Доктор Кто\"}]}");
-                return new Net.Resp(200, "{\"results\":[{\"id\":1396,\"media_type\":\"tv\",\"name\":\"Во все тяжкие\",\"original_name\":\"Breaking Bad\"}]}");
-            }
-            if (url.contains("/tv/1396/season/1")) return new Net.Resp(200, "{\"episodes\":[{\"episode_number\":1,\"name\":\"Пилот\",\"vote_average\":7.5,\"vote_count\":50},"
-                    + "{\"episode_number\":2,\"name\":\"Кот в мешке\",\"vote_average\":9.0,\"vote_count\":50},{\"episode_number\":3,\"name\":\"…и мешок в реке\",\"vote_average\":8.0,\"vote_count\":50},"
-                    + "{\"episode_number\":4,\"name\":\"Нет файла\",\"vote_average\":9.9,\"vote_count\":90}]}");
-            if (url.contains("/tv/1396/season/2")) return new Net.Resp(200, "{\"episodes\":[{\"episode_number\":1,\"name\":\"Семь тридцать семь\",\"vote_average\":9.5,\"vote_count\":60}]}");
-            if (url.contains("/tv/1396")) return new Net.Resp(200, "{\"name\":\"Во все тяжкие\",\"first_air_date\":\"2008-01-20\",\"vote_average\":8.9,\"vote_count\":15000,"
-                    + "\"seasons\":[{\"season_number\":0},{\"season_number\":1},{\"season_number\":2}]}");
-            return new Net.Resp(404, "{}");
-        };
-        test("TMDB: тренды с пометкой «есть у вас», автопривязка сериала, серии по рейтингу с файлами", () -> {
-            Store store = new Store(Files.createTempDirectory("tmdb").toFile());
-            store.saveSettings(new JSONObject().put("tmdb_key", "k123"));
-            store.upsertSource(new JSONObject().put("id", "bb").put("type", "series").put("title", "Во все тяжкие"));
-            store.upsertSource(new JSONObject().put("id", "doc").put("type", "series").put("title", "Доктор"));
-            Tmdb t = new Tmdb(store, tmdbNet);
-            JSONObject l = t.lists(false);
-            JSONArray tr = l.getJSONArray("trending");
-            check(tr.length() == 2 && tr.getJSONObject(0).getString("source_id").equals("bb") && !tr.getJSONObject(1).has("source_id"), tr.toString());
-            check(tr.getJSONObject(1).getString("year").equals("1999") && tr.getJSONObject(1).getString("type").equals("movie"), "фильм");
-            JSONArray files = new JSONArray();
-            for (String n : new String[]{"Breaking.Bad.S01E01.mkv", "Breaking.Bad.S01E02.mkv", "Breaking.Bad.S01E03.mkv", "Breaking.Bad.S02E01.mkv"})
-                files.put(new JSONObject().put("name", n).put("path", "bb/" + n));
-            JSONObject info = t.forSource(store.getSource("bb"), files, false);
-            check(info.getJSONObject("match").getLong("id") == 1396 && store.getSource("bb").optLong("tmdb_id") == 1396, "автопривязка");
-            JSONArray eps = info.getJSONArray("episodes");
-            check(eps.getJSONObject(0).getString("file").equals("bb/Breaking.Bad.S02E01.mkv"), "лучшая серия с файлом первой: " + eps.getJSONObject(0));
-            check(eps.getJSONObject(1).getString("file").endsWith("S01E02.mkv"), "вторая");
-            check(!eps.getJSONObject(4).has("file") && eps.getJSONObject(4).getString("name").equals("Нет файла"), "серии без файла — в конце");
-            JSONObject doc = t.forSource(store.getSource("doc"), new JSONArray(), false);
-            check(doc.isNull("match") && doc.getJSONArray("candidates").length() == 2, "несколько вариантов — спросить: " + doc);
-            Tmdb bad = new Tmdb(store, (url, h, b) -> new Net.Resp(401, "{}"));
-            try {
-                bad.lists(true);
-                check(false, "ожидалась ошибка ключа");
-            } catch (ApiError e) {
-                check(e.getMessage().contains("не принял ключ"), e.getMessage());
-            }
-        });
-        test("TMDB «Русское»: язык оригинала ru, лучшие — с порогом голосов, новинки — за год, пометка «есть у вас»", () -> {
-            Store store = new Store(Files.createTempDirectory("ru").toFile());
-            store.upsertSource(new JSONObject().put("id", "kuhnya").put("type", "series").put("title", "Кухня").put("tmdb_id", 63770).put("tmdb_type", "tv"));
-            final List<String> urls = new ArrayList<>();
-            Tmdb t = new Tmdb(store, (url, h, b) -> {
-                urls.add(url);
-                return new Net.Resp(200, "{\"page\":1,\"total_pages\":3,\"results\":[{\"id\":63770,\"name\":\"Кухня\",\"first_air_date\":\"2012-11-12\",\"vote_average\":7.9,\"vote_count\":300},"
-                        + "{\"id\":7,\"name\":\"Другой сериал\",\"vote_average\":7.1,\"vote_count\":80}]}");
-            });
-            check(!t.russian("tv", "popular", 1, false).getBoolean("configured"), "без ключа");
-            store.saveSettings(new JSONObject().put("tmdb_key", "k123"));
-            JSONObject pop = t.russian("tv", "popular", 1, false);
-            JSONArray it = pop.getJSONArray("items");
-            check(it.length() == 2 && it.getJSONObject(0).getString("source_id").equals("kuhnya") && !it.getJSONObject(1).has("source_id"), it.toString());
-            check(pop.getInt("total_pages") == 3, "страницы");
-            String u0 = urls.get(0);
-            check(u0.contains("discover/tv?") && u0.contains("with_original_language=ru") && u0.contains("sort_by=popularity.desc") && u0.contains("language=ru-RU"), u0);
-            t.russian("movie", "top", 2, false);
-            String u1 = urls.get(1);
-            check(u1.contains("discover/movie?") && u1.contains("sort_by=vote_average.desc") && u1.contains("vote_count.gte=100") && u1.contains("page=2"), u1);
-            t.russian("tv", "new", 1, false);
-            check(urls.get(2).contains("first_air_date.gte=" + LocalDate.now().minusYears(1)), urls.get(2));
-            t.russian("tv", "popular", 1, false);
-            check(urls.size() == 3, "кэш списка");
-        });
-        test("IMDb: разбор title.ratings.tsv.gz, порог голосов, поиск по tt", () -> {
-            Store store = new Store(Files.createTempDirectory("imdb").toFile());
-            ImdbRatings im = new ImdbRatings(store);
-            check(!im.loaded() && im.ageDays() == -1 && im.get("tt0903747") == null, "пусто");
-            StringBuilder tsv = new StringBuilder("tconst\taverageRating\tnumVotes\n");
-            for (int i = 1; i <= 2000; i++) tsv.append(String.format(Locale.ROOT, "tt%07d\t%.1f\t%d\n", i, 5 + (i % 50) / 10.0, i * 3));
-            tsv.append("tt0903747\t9.5\t2300000\nмусор\nttX\t1\t1\n");
-            ByteArrayOutputStream bo = new ByteArrayOutputStream();
-            try (java.util.zip.GZIPOutputStream gz = new java.util.zip.GZIPOutputStream(bo)) { gz.write(tsv.toString().getBytes(StandardCharsets.UTF_8)); }
-            int n = im.update(new ByteArrayInputStream(bo.toByteArray()), null, null);
-            check(n == 2000 - 166 + 1, "оставлено " + n); // голосов ≥ 500: id ≥ 167
-            double[] bb = im.get("tt0903747");
-            check(bb != null && bb[0] == 9.5 && bb[1] == 2300000, "рейтинг");
-            check(im.get("tt0000100") == null, "мало голосов — не хранится");
-            check(new ImdbRatings(store).get("tt0001000") != null && new ImdbRatings(store).ageDays() == 0, "с диска");
-            try {
-                im.update(new ByteArrayInputStream("не gzip".getBytes(StandardCharsets.UTF_8)), null, null);
-                check(false, "не gzip должен отклоняться");
-            } catch (java.util.zip.ZipException e) {
-                check(im.get("tt0903747") != null, "старые данные целы");
-            }
-        });
-        test("Подборка: мир — тренды и лучшие, Россия — язык ru; «Лучшее» сортируется по IMDb", () -> {
-            Store store = new Store(Files.createTempDirectory("pick").toFile());
-            store.saveSettings(new JSONObject().put("tmdb_key", "k123"));
-            ImdbRatings im = new ImdbRatings(store);
-            String tsv = "tconst\taverageRating\tnumVotes\ntt0000001\t9.1\t9000\ntt0000002\t7.0\t9000\n";
-            ByteArrayOutputStream bo = new ByteArrayOutputStream();
-            try (java.util.zip.GZIPOutputStream gz = new java.util.zip.GZIPOutputStream(bo)) { gz.write(tsv.getBytes(StandardCharsets.UTF_8)); }
-            im.update(new ByteArrayInputStream(bo.toByteArray()), null, null);
-            final List<String> urls = new ArrayList<>();
-            Tmdb t = new Tmdb(store, (url, h, b) -> {
-                urls.add(url);
-                if (url.contains("/external_ids")) {
-                    String id = url.contains("/tv/1/") ? "tt0000002" : url.contains("/tv/2/") ? "tt0000001" : "";
-                    return new Net.Resp(200, "{\"imdb_id\":" + (id.isEmpty() ? "null" : "\"" + id + "\"") + "}");
-                }
-                return new Net.Resp(200, "{\"page\":1,\"total_pages\":40,\"results\":[{\"id\":1,\"name\":\"Первый\",\"vote_average\":9.0},"
-                        + "{\"id\":2,\"name\":\"Второй\",\"vote_average\":8.0},{\"id\":3,\"name\":\"Третий\",\"vote_average\":8.5}]}");
-            });
-            t.imdb = im;
-            JSONObject best = t.pick("world", "tv", "best", 1, false);
-            JSONArray it = best.getJSONArray("items");
-            check(urls.get(0).contains("/tv/top_rated?"), urls.get(0));
-            check(it.getJSONObject(0).getString("title").equals("Второй") && it.getJSONObject(0).getDouble("imdb_rating") == 9.1, "по IMDb: " + it);
-            check(it.getJSONObject(1).getString("title").equals("Первый") && it.getJSONObject(2).getString("title").equals("Третий") && !it.getJSONObject(2).has("imdb_id"), it.toString());
-            check(best.getInt("total_pages") == 20 && best.getBoolean("imdb_loaded"), "страницы ограничены 20");
-            int before = urls.size();
-            t.pick("world", "tv", "popular", 1, false);
-            check(urls.get(before).contains("/trending/tv/week?"), urls.get(before));
-            check(urls.size() == before + 1, "imdb_id берутся из кэша на телефоне, без повторных запросов");
-            t.pick("ru", "movie", "popular", 2, false);
-            String ru = urls.get(urls.size() - 4);
-            check(ru.contains("discover/movie?") && ru.contains("with_original_language=ru") && ru.contains("page=2"), ru);
+            check(Arrays.equals(Captions.episodeOf("Breaking.Bad.S01E05.1080p.mkv"), new int[]{1, 5}), "S01E05");
+            check(Arrays.equals(Captions.episodeOf("bb s2 e10.mp4"), new int[]{2, 10}), "s2 e10");
+            check(Arrays.equals(Captions.episodeOf("Lost 3x07.avi"), new int[]{3, 7}), "3x07");
+            check(Arrays.equals(Captions.episodeOf("Во все тяжкие 2 сезон 3 серия.mp4"), new int[]{2, 3}), "2 сезон 3 серия");
+            check(Arrays.equals(Captions.episodeOf("Сезон 4 - Серия 12.mkv"), new int[]{4, 12}), "Сезон 4 - Серия 12");
+            check(Arrays.equals(Captions.episodeOf("серия 7.mp4"), new int[]{1, 7}), "серия 7");
+            check(Captions.episodeOf("Матрица 1999 1080p.mkv") == null, "фильм — не серия");
         });
         test("баннер: внутри безопасной зоны TikTok, сверху — над видео, снизу — субтитры поднимаются", () -> {
             int[] t = Banner.rect("top", 1.0, 900, 300);
@@ -501,84 +438,6 @@ public class CoreTest {
             check(c2.getJSONObject(0).getJSONArray("reasons").toString().contains("быстрый монтаж")
                     && Math.abs(c2.getJSONObject(0).getDouble("start") - 200) <= 30, c2.toString());
         });
-        test("автоплан: 3 лучших серии по TMDB на 3 дня, клипы в очередь; фильм — 3 момента подальше", () -> {
-            Store store = new Store(Files.createTempDirectory("plan").toFile());
-            store.saveSettings(new JSONObject().put("tmdb_key", "k123"));
-            store.upsertSource(new JSONObject().put("id", "bb").put("type", "series").put("title", "Во все тяжкие"));
-            store.upsertSource(new JSONObject().put("id", "mx").put("type", "movie").put("title", "Матрица"));
-            JSONObject st = store.loadState();
-            st.getJSONObject("used_files").put("bb", new JSONArray().put("bb/Breaking.Bad.S02E01.mkv"));
-            store.saveState(st);
-            Tmdb tm = new Tmdb(store, tmdbNet);
-            Platform pf = new FakePlatform(new byte[10]) {
-                public JSONArray listFiles(JSONObject src) {
-                    JSONArray a = new JSONArray();
-                    try {
-                        String[] names = src.optString("id").equals("bb")
-                                ? new String[]{"Breaking.Bad.S01E01.mkv", "Breaking.Bad.S01E02.mkv", "Breaking.Bad.S01E03.mkv", "Breaking.Bad.S02E01.mkv"}
-                                : new String[]{"Matrix.1999.mkv"};
-                        for (String n : names) a.put(new JSONObject().put("name", n).put("path", src.optString("id") + "/" + n).put("mtime", 1));
-                    } catch (Exception e) { throw new RuntimeException(e); }
-                    return a;
-                }
-                public JSONObject probe(String id) {
-                    try { return new JSONObject().put("has_srt", id.contains("S01E03")); } catch (Exception e) { throw new RuntimeException(e); }
-                }
-            };
-            final List<String> analyzed = new ArrayList<>();
-            Planner.Analyzer an = (ctx, file, len, lo, hi) -> {
-                analyzed.add(file);
-                JSONArray c = new JSONArray();
-                for (double s0 : new double[]{100, 110, 400, 900}) c.put(new JSONObject().put("start", s0).put("end", s0 + len).put("score", 0.5).put("reasons", new JSONArray().put("громко")));
-                return new JSONObject().put("candidates", c);
-            };
-            File cf = File.createTempFile("clips", ".json");
-            cf.delete();
-            Map<String, JobQueue.Handler> ch = new HashMap<>();
-            ch.put("clip", ctx -> new JSONObject());
-            JobQueue clips = new JobQueue(cf, ch); // не запущена: только принимает задачи
-            File pfj = File.createTempFile("pjobs", ".json");
-            pfj.delete();
-            Map<String, JobQueue.Handler> h = new HashMap<>();
-            h.put("plan", ctx -> Planner.run(ctx, store, pf, tm, an, clips, D0));
-            JobQueue q = new JobQueue(pfj, h);
-            JSONObject j1 = q.submit("plan", new JSONObject().put("source_id", "bb").put("count", 3), "план");
-            q.start();
-            check(q.waitIdle(5000), "план не выполнился");
-            JSONObject done = q.get(j1.getString("id"));
-            check(done.getString("status").equals("done"), done.toString());
-            JSONArray items = Planner.load(store);
-            check(items.length() == 3, "пунктов " + items.length());
-            String[] want = {"bb/Breaking.Bad.S01E02.mkv", "bb/Breaking.Bad.S01E03.mkv", "bb/Breaking.Bad.S01E01.mkv"};
-            for (int i = 0; i < 3; i++) {
-                JSONObject it = items.getJSONObject(i);
-                check(it.getString("date").equals(D0.plusDays(i).toString()), "дата " + it.getString("date"));
-                check(it.getString("file").equals(want[i]), i + ": " + it.getString("file"));
-                check(it.getDouble("start") == 100 && it.getDouble("end") == 130, "лучший момент серии");
-                JSONObject cj = clips.get(it.getString("job_id"));
-                check(cj != null && cj.getString("type").equals("clip"), "клип в очереди");
-            }
-            check(items.getJSONObject(0).getString("why").contains("рейтинг 9,0"), items.getJSONObject(0).getString("why"));
-            check(clips.get(items.getJSONObject(1).getString("job_id")).getJSONObject("params").getString("sub_source").equals("srt"), "субтитры из .srt");
-            // фильм: 3 момента одного файла, далеко друг от друга
-            q.submit("plan", new JSONObject().put("source_id", "mx").put("count", 3).put("start", D0.plusDays(3).toString()).put("make_clips", false), "фильм");
-            check(q.waitIdle(5000), "фильм");
-            JSONArray all = Planner.load(store);
-            List<Double> starts = new ArrayList<>();
-            for (int i = 0; i < all.length(); i++) if (all.getJSONObject(i).getString("source_id").equals("mx")) {
-                starts.add(all.getJSONObject(i).getDouble("start"));
-                check(!all.getJSONObject(i).has("job_id"), "без клипов");
-            }
-            check(starts.equals(Arrays.asList(100.0, 400.0, 900.0)), "моменты фильма: " + starts);
-            // повторный план того же источника заменяет неопубликованные пункты, а не добавляет
-            q.submit("plan", new JSONObject().put("source_id", "bb").put("count", 3).put("make_clips", false), "ещё раз");
-            check(q.waitIdle(5000), "повтор");
-            int bb = 0;
-            for (int i = 0; i < Planner.load(store).length(); i++) if (Planner.load(store).getJSONObject(i).getString("source_id").equals("bb")) bb++;
-            check(bb == 3, "дубли в плане: " + bb);
-            q.stop();
-        });
-
         System.out.println("\nИтого: " + passed + " прошло, " + failed + " упало");
         System.exit(failed == 0 ? 0 : 1);
     }
@@ -621,6 +480,19 @@ public class CoreTest {
         String body = new String(Store.readAll(in), StandardCharsets.UTF_8);
         if (code != 200) throw new IOException(code + " " + body);
         return body;
+    }
+
+    /** POST: [код, тело] (без исключения на ошибку) */
+    static String[] post2(String url, String cookie, String json) throws Exception {
+        HttpURLConnection c = (HttpURLConnection) new URL(url).openConnection(java.net.Proxy.NO_PROXY);
+        c.setRequestMethod("POST");
+        c.setDoOutput(true);
+        c.setRequestProperty("Cookie", encodeCookie(cookie));
+        c.setRequestProperty("Content-Type", "application/json");
+        c.getOutputStream().write(json.getBytes(StandardCharsets.UTF_8));
+        int code = c.getResponseCode();
+        InputStream in = code >= 400 ? c.getErrorStream() : c.getInputStream();
+        return new String[]{String.valueOf(code), new String(Store.readAll(in), StandardCharsets.UTF_8)};
     }
 
     /** PUT: [код, тело] */

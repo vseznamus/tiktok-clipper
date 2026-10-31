@@ -70,11 +70,11 @@ async function pollJob(id, onUpdate) {
 function bar(frac) { return `<div class="progress"><i style="width:${Math.round((frac || 0) * 100)}%"></i></div>`; }
 
 // ------------------------------------------------------------------ роутер
-const routes = { pick: viewPick, today: viewToday, discover: viewDiscover, ru: viewRu, clip: viewClip, cam: viewCam, queue: viewQueue, clips: viewClips,
+const routes = { streamers: viewStreamers, today: viewToday, clip: viewClip, cam: viewCam, queue: viewQueue, clips: viewClips,
   clipview: viewClipView, settings: viewSettings, source: viewSource };
 
 function parseHash() {
-  const h = location.hash.replace(/^#\/?/, "") || (APP ? "pick" : "today");
+  const h = location.hash.replace(/^#\/?/, "") || (APP ? "clip" : "today");
   const [path, qs] = h.split("?");
   const [name, ...rest] = path.split("/");
   return { name, arg: rest.join("/") ? decodeURIComponent(rest.join("/")) : "", q: new URLSearchParams(qs || "") };
@@ -84,9 +84,10 @@ async function route() {
   S.seq = (S.seq || 0) + 1;
   const r = parseHash();
   // в приложении только «Подборка», «Клип», «Настройки»; старые адреса ведут туда
-  if (APP && { today: 1, discover: 1, ru: 1, queue: 1, clips: 1, source: 1, cam: 1 }[r.name]) { location.replace(r.name === "ru" || r.name === "discover" ? "#/pick" : "#/clip"); return; }
-  const fn = routes[r.name] || (APP ? viewPick : viewToday);
-  const tab = { cam: "clip", clipview: APP ? "clip" : "clips", source: "settings" }[r.name] || r.name;
+  // в приложении — «Стримеры», «Клип», «Настройки»; старые адреса ведут туда
+  if (APP && { today: 1, discover: 1, ru: 1, pick: 1, queue: 1, clips: 1 }[r.name]) { location.replace("#/clip"); return; }
+  const fn = routes[r.name] || (APP ? viewClip : viewToday);
+  const tab = { cam: APP ? "streamers" : "clip", clipview: APP ? "clip" : "clips", source: APP ? "streamers" : "settings" }[r.name] || r.name;
   $$("#nav a").forEach((a) => a.classList.toggle("on", a.dataset.tab === tab));
   try { await fn(r.arg, r.q); } catch (e) { if (e.message !== "auth") app.innerHTML += `<p class="err pad">${esc(e.message)}</p>`; }
   window.scrollTo(0, 0);
@@ -112,26 +113,10 @@ async function viewToday() {
   await loadCfg(true);
   const d = await api("/api/today");
   if (staleSince(seq)) return;
-  const planCard = (d.plan_today || []).length || (d.plan_next || []).length ? `<div class="card hl stack"><h2>По плану на сегодня</h2>
-    ${(d.plan_today || []).length ? d.plan_today.map((it, i) => planItemHtml(it, i, false) + (it.clip_status === "done"
-      ? `<button class="btn ok" data-ppub="${i}">Опубликовано</button>` : "")).join("") : `<p class="muted">На сегодня в плане ничего нет.</p>`}
-    ${(d.plan_next || []).length ? `<p class="muted small">Дальше: ${d.plan_next.map((x) => `${fmtDate(x.date)} — ${esc(x.source_title)}`).join("; ")}</p>` : ""}
-    <a class="btn ghost sm" href="#/discover/kino">Весь план</a></div>` : "";
-  const bindToday = () => {
-    bindPlan(d.plan_today || [], () => route());
-    $$("[data-ppub]").forEach((b) => (b.onclick = async () => {
-      const r = await api(`/api/plan/${d.plan_today[+b.dataset.ppub].id}/published`, { method: "POST" }); toast(r.message); route();
-    }));
-    if ((d.plan_today || []).some((x) => x.clip_status === "running" || x.clip_status === "queued")) every(async () => {
-      const t = await api("/api/today").catch(() => null);
-      if (t && !(t.plan_today || []).some((x) => x.clip_status === "running" || x.clip_status === "queued") && parseHash().name === "today") route();
-    }, 5000);
-  };
   if (d.empty) {
-    app.innerHTML = `<h1>Сегодня</h1>${planCard}<div class="card stack"><h2>Источников пока нет</h2>
-      <p class="muted">Добавьте ${APP ? "сериал или фильм" : "сериал, фильм, стрим или блогера"} — и здесь появится план публикаций.</p>
+    app.innerHTML = `<h1>Сегодня</h1><div class="card stack"><h2>Источников пока нет</h2>
+      <p class="muted">Добавьте сериал, фильм, стрим или блогера — и здесь появится план публикаций.</p>
       <a class="btn primary" href="#/source/new">Добавить источник</a></div>`;
-    bindToday();
     return;
   }
   const c = d.current;
@@ -142,7 +127,7 @@ async function viewToday() {
     : d.folder ? `<p class="warn">В папке «${esc(d.folder)}» пока нет видео. Положите туда файлы.</p>`
       : `<p class="warn">Для этого источника не выбрана папка с видео.</p>
          <a class="btn" href="#/source/${encodeURIComponent(c.source_id)}">Выбрать папку</a>`;
-  app.innerHTML = `<h1>Сегодня</h1>${planCard}
+  app.innerHTML = `<h1>Сегодня</h1>
   <div class="card hl stack" id="curCard">
     <div class="row"><span class="badge ${c.type}">${esc(c.type_name)}</span>
       <span class="grow"></span><span class="${d.overdue ? "due-over" : d.is_due ? "due-ok" : "muted"}">${esc(d.due_status)}</span></div>
@@ -162,7 +147,6 @@ async function viewToday() {
   </ul></div>
   ${d.history.length ? `<button class="btn ghost sm" id="bUndo">Отменить последнее действие</button>` : ""}`;
 
-  bindToday();
   $("#bPub").onclick = async () => {
     const msg = d.clip ? `Отметить, что клип «${d.clip.filename}» опубликован?` : "Отметить пост как опубликованный?";
     if (!confirm(msg)) return;
@@ -206,11 +190,15 @@ async function viewClip(_arg, q) {
     history.replaceState(null, "", "#/clip");
   }
   if (dr.source_id === undefined) dr.source_id = S.cfg.sources[0] ? S.cfg.sources[0].id : "";
-  if (APP) { dr.source_id = ""; if (dr.file && !dr.file.startsWith("_picked/")) dr.file = null; } // в приложении — видео с телефона
+  if (APP && dr.source_id && !S.cfg.sources.some((x) => x.id === dr.source_id)) { dr.source_id = ""; dr.file = null; }
   saveDraft();
-  const opts = S.cfg.sources.map((s) => `<option value="${esc(s.id)}" ${s.id === dr.source_id ? "selected" : ""}>${esc(s.title)} (${esc(typeName(s.type))})</option>`).join("");
+  const opts = S.cfg.sources.map((s) => `<option value="${esc(s.id)}" ${s.id === dr.source_id ? "selected" : ""}>${esc(s.title)}${APP ? "" : ` (${esc(typeName(s.type))})`}</option>`).join("");
   app.innerHTML = APP ? `<h1>Клип</h1><div id="jobsBox"></div>
-  <div class="card"><h2>Видео</h2><div id="fileBox"></div></div>
+  <div class="card"><h2>Запись</h2>
+    ${S.cfg.sources.length ? "" : `<p class="muted small">Добавьте стримера на вкладке «Стримеры» — здесь появятся его записи. Или выберите видео с телефона.</p>`}
+    <label class="f" for="srcSel">Стример</label>
+    <select id="srcSel">${opts}<option value="" ${dr.source_id ? "" : "selected"}>Видео с телефона</option></select>
+    <div id="fileBox"></div></div>
   <div id="momentBox"></div><div id="readyBox"></div>`
     : `<h1>Выбор момента</h1>
   <div class="card"><label class="f" for="srcSel">Источник</label>
@@ -241,15 +229,16 @@ async function viewClip(_arg, q) {
       const q = $("#bQuick");
       if (q) q.onclick = async () => {
         q.disabled = true;
-        const job = await api("/api/jobs", { method: "POST", body: { type: "auto", params: { file: dr.file, count: 1 } } }).catch(() => null);
+        const job = await api("/api/jobs", { method: "POST", body: { type: "auto", params: { file: dr.file, count: 1, source_id: dr.source_id || "" } } }).catch(() => null);
         if (!job) { q.disabled = false; return; }
         S.watchAuto = job.id; toast("Ищу лучший момент и собираю клип — прогресс вверху"); appJobs(); window.scrollTo(0, 0);
       };
       return;
     }
-    box.innerHTML = `<label class="f">Файл</label>
+    if (APP && dr.source_id) data.files.sort((a, b) => (b.mtime || 0) - (a.mtime || 0)); // свежие записи сверху
+    box.innerHTML = `<label class="f">${APP && dr.source_id ? "Запись эфира" : "Файл"}</label>
       ${data.files.length ? `<ul class="list">${data.files.map((f) => `<li><button class="item ${f.path === suggested ? "sel" : ""}" data-path="${esc(f.path)}">
-        <span class="t"><b>${esc(f.name)}</b><br><span class="muted small">${fmtSize(f.size)}${f.used ? " · уже использован" : ""}${f.path === suggested ? " · ★ рекомендуем" : ""}</span></span>
+        <span class="t"><b>${esc(f.name)}</b><br><span class="muted small">${fmtSize(f.size)}${f.chat ? " · есть чат" : ""}${f.used ? " · уже использован" : ""}${f.path === suggested ? " · ★ рекомендуем" : ""}</span></span>
         <span class="chev">›</span></button></li>`).join("")}</ul>`
         : data.has_folder === false ? `<p class="warn">Для источника не выбрана папка с видео.</p>
             <a class="btn" href="#/source/${encodeURIComponent(dr.source_id)}">Выбрать папку</a>`
@@ -297,7 +286,8 @@ async function viewClip(_arg, q) {
     box.innerHTML = `<p class="muted pad">Читаю видео…</p>`;
     const info = await api("/api/probe?file=" + encodeURIComponent(dr.file));
     const src = S.cfg.sources.find((s) => s.id === dr.source_id);
-    const prof = src ? src.full_profile : APP ? Object.assign({ layout: "single", cam_rect: null }, tplOf())
+    const prof = src ? (APP ? Object.assign({}, src.full_profile, tplOf(), { layout: src.full_profile.layout }) : src.full_profile)
+      : APP ? Object.assign({ layout: "single", cam_rect: null }, tplOf())
       : { layout: "single", mirror: true, subtitles: true, sub_style: "classic", language: "auto", cam_rect: null };
     const dur = info.duration || 0;
     const mlen = Number(S.cfg.settings.moment_len) || 30;
@@ -330,7 +320,8 @@ async function viewClip(_arg, q) {
       <button class="btn" id="playSeg">▶ Проиграть отрезок</button>
     </div>
     <div class="card stack"><button class="btn" id="bMom">${APP ? "Автоподбор моментов" : "Предложить моменты"}</button>
-      ${APP ? `<p class="muted small">Найду самые яркие места: громкие всплески, плотная и эмоциональная речь, быстрый монтаж.</p>` : ""}
+      ${APP ? (info.has_chat ? `<p class="ok small">Рядом с записью есть файл чата — моменты найду по реакции зрителей (всплески KEKW, «ахах»…).</p>`
+        : `<p class="muted small">Найду самые яркие места по звуку: крики, смех, эмоциональная речь. Положите рядом с записью файл чата — найду по реакции зрителей.</p>`) : ""}
       <div id="momRes"></div></div>
     <div class="card">
       <h2>Настройки клипа</h2>
@@ -342,8 +333,8 @@ async function viewClip(_arg, q) {
         <label class="f" for="oLang">Язык речи</label><select id="oLang">${langs.map(([v, n]) => `<option value="${v}" ${dr.language === v ? "selected" : ""}>${n}</option>`).join("")}</select>
         <label class="f" for="oStyle">Стиль субтитров</label><select id="oStyle">${styles.map(([v, n]) => `<option value="${v}" ${dr.sub_style === v ? "selected" : ""}>${esc(n)}</option>`).join("")}</select>
       </div>
-      ${APP ? "" : `<label class="f" for="oLayout">Раскладка</label>
-      <select id="oLayout"><option value="single" ${dr.layout === "single" ? "selected" : ""}>Один кадр по центру (фильм, сериал)</option>
+      ${`<label class="f" for="oLayout">Раскладка</label>
+      <select id="oLayout"><option value="single" ${dr.layout === "single" ? "selected" : ""}>${APP ? "Один кадр по центру" : "Один кадр по центру (фильм, сериал)"}</option>
         <option value="split" ${dr.layout === "split" ? "selected" : ""}>Экран сверху + вебкамера снизу</option></select>
       <div id="camInfo" class="stack" style="margin-top:10px"></div>`}
     </div>
@@ -434,8 +425,7 @@ async function viewClip(_arg, q) {
       el.innerHTML = `<p class="${camOk ? "ok" : "warn"}">${camOk ? "Рамка вебкамеры задана." : "Рамка вебкамеры не задана — клип получится в режиме «один кадр»."}</p>
         <a class="btn" href="#/cam/${encodeURIComponent(src.id)}?file=${encodeURIComponent(dr.file)}&t=${dr.start}">Проверить рамку вебкамеры</a>`;
     };
-    if (APP) dr.layout = "single"; // в приложении — только сериалы и фильмы, один кадр
-    else $("#oLayout").onchange = (e) => { dr.layout = e.target.value; saveDraft(); camVis(); };
+    $("#oLayout").onchange = (e) => { dr.layout = e.target.value; saveDraft(); camVis(); };
     subVis(); camVis();
 
     $("#bMake").onclick = async () => {
@@ -580,7 +570,7 @@ async function viewCam(sid, q) {
     const scr = rects.screen.join() === "0,0,1,1" ? null : rects.screen;
     await api(`/api/sources/${encodeURIComponent(sid)}/profile`, { method: "PUT", body: { cam_rect: rects.cam, screen_rect: scr, layout: "split" } });
     await loadCfg(true); S.draft.layout = "split"; saveDraft();
-    toast("Рамка сохранена"); history.back();
+    toast("Рамка сохранена"); if (APP) go("#/streamers"); else history.back();
   };
   $("#bNone").onclick = async () => {
     if (!confirm("Убрать вебкамеру? Клипы этого источника будут в режиме «один кадр».")) return;
@@ -767,7 +757,6 @@ async function viewSettings() {
     <button class="btn primary" id="bSched">Сохранить расписание</button></div>`}
 
   ${APP ? `<div class="card stack" id="nightCard"><h2>Ночная нарезка</h2><p class="muted pad">Загружаю…</p></div>` : ""}
-  ${APP ? keysCard(se) : ""}
   ${APP ? appAsrCard(st, se) : `  <div class="card"><h2>Распознавание речи</h2>
     <p class="small">faster-whisper: ${asr["faster-whisper"].ok ? '<span class="ok">установлен</span>' : `<span class="muted">${esc(asr["faster-whisper"].message)}</span>`}</p>
     <p class="small">whisper.cpp: ${asr["whisper.cpp"].ok ? `<span class="ok">установлен</span> · модели: ${esc(asr["whisper.cpp"].models.join(", ") || "нет")}` : `<span class="muted">${esc(asr["whisper.cpp"].message)}</span>`}</p>
@@ -821,20 +810,6 @@ async function viewSettings() {
     if (fin.status === "done") { toast("Модель удалена"); viewSettings(); } else { b.disabled = false; toast(fin.error || "Не получилось"); }
   }));
   if (APP) nightCard();
-  const bKeys = $("#bKeys");
-  if (bKeys) {
-    const send = async (body, msg) => { await api("/api/settings", { method: "PUT", body }); await loadCfg(true); toast(msg); viewSettings(); };
-    bKeys.onclick = async () => {
-      const body = {};
-      for (const [id, k] of KEY_FIELDS) { const v = $("#" + id).value.trim(); if (v) body[k] = v; }
-      if (!Object.keys(body).length) { toast("Вставьте ключ в поле", true); return; }
-      await send(body, "Ключ сохранён");
-    };
-    $("#bKeysDel").onclick = async () => {
-      if (!confirm("Стереть ключ TMDB с телефона?")) return;
-      await send(Object.fromEntries(KEY_FIELDS.map(([, k]) => [k, ""])), "Ключ стёрт");
-    };
-  }
   $("#bAsr").onclick = async () => {
     const body = { asr_backend: $("#aB").value, asr_model: $("#aM").value, asr_language: $("#aL").value, moment_len: +$("#mL").value };
     if ($("#vP")) body.x264_preset = $("#vP").value;
@@ -843,207 +818,6 @@ async function viewSettings() {
     await loadCfg(true); toast("Настройки сохранены");
   };
   const out = $("#bOut"); if (out) out.onclick = async () => { await fetch("/logout", { method: "POST" }); location.href = "/login"; };
-}
-
-const KEY_FIELDS = [["kTm", "tmdb_key"]];
-function keysCard(se) {
-  const f = (id, k, label) => `<label class="f" for="${id}">${label}</label>
-    <input id="${id}" autocomplete="off" autocapitalize="off" spellcheck="false"
-      placeholder="${se[k + "_set"] ? `сохранён (${esc(se[k + "_hint"])}) — вставьте новый, чтобы заменить` : "не задан"}">`;
-  return `<div class="card"><h2>Ключ TMDB</h2>
-    <p class="muted small">Бесплатный. Нужен для вкладки «Подборка». Хранится только на этом телефоне.
-      Как получить — в инструкции, раздел «Подборка».</p>
-    ${f("kTm", "tmdb_key", "Ключ API или токен доступа")}
-    <p class="muted small"><a href="https://www.themoviedb.org/settings/api" target="_blank" rel="noopener">themoviedb.org/settings/api</a></p>
-    <div style="height:12px"></div><button class="btn primary" id="bKeys">Сохранить ключ</button>
-    <button class="btn ghost sm" id="bKeysDel">Стереть ключ</button></div>`;
-}
-
-// ------------------------------------------------------------------ «Моменты»: автоплан и подборки TMDB (сериалы и фильмы)
-function fmtRating(r) { return (Number(r) || 0).toFixed(1).replace(".", ","); }
-
-async function viewDiscover(_sec, q) {
-  const seq = S.seq;
-  await loadCfg();
-  if (staleSince(seq)) return;
-  S.discSec = "kino";
-  app.innerHTML = `<h1>Моменты</h1>
-  <p class="muted small" style="margin:10px 2px">Автоплан моментов на несколько дней, лучшие серии по рейтингу TMDB, что популярно сейчас.</p>
-  <div id="dBox"><p class="muted pad">Загружаю…</p></div>
-  <button class="btn ghost sm" id="dRef">Обновить</button>`;
-  $("#dRef").onclick = () => renderKino($("#dBox"), true);
-  renderKino($("#dBox"), !!(q && q.get("refresh") === "1"));
-}
-
-// ------------------------------------------------------------------ «Фильмы и сериалы»: автоплан и TMDB
-const PLAN_ST = { queued: "клип в очереди", running: "клип собирается", done: "клип готов", error: "ошибка сборки", canceled: "сборка отменена", none: "клип не сделан" };
-function planItemHtml(it, i, full = true) {
-  const st = it.clip_status;
-  return `<div class="mom"><div class="row"><span class="tm">${fmtDate(it.date)}</span><span class="grow"></span>
-      <span class="small ${st === "done" ? "ok" : st === "error" ? "err" : "muted"}">${it.published ? "опубликовано" : PLAN_ST[st] || st}</span></div>
-    <b class="wrap">${esc(it.source_title)} · ${esc(it.file_name)}</b>
-    <span class="small">${fmt(it.start, false)}–${fmt(it.end, false)} · ${esc(it.how || "")}${(it.reasons || []).length ? " · " + esc(it.reasons.join(", ")) : ""}</span>
-    ${it.why ? `<span class="muted small wrap">${esc(it.why)}</span>` : ""}
-    ${st === "running" || st === "queued" ? bar(it.progress) : ""}
-    ${st === "error" && it.error ? `<span class="err small">${esc(it.error)}</span>` : ""}
-    <div class="row">${st === "done" ? `<a class="btn sm primary" href="#/clipview/${encodeURIComponent(it.clip_id)}">Открыть клип</a>`
-      : st === "queued" || st === "running" ? "" : `<button class="btn sm" data-pclip="${i}">Сделать клип</button>`}
-      <button class="btn sm ghost" data-pmom="${i}">Момент</button>
-      ${full ? `<button class="btn sm ghost" data-pdel="${i}" aria-label="Убрать из плана">Убрать</button>` : ""}</div></div>`;
-}
-function bindPlan(items, after) {
-  $$("[data-pclip]").forEach((b) => (b.onclick = async () => {
-    b.disabled = true; await api(`/api/plan/${items[+b.dataset.pclip].id}/clip`, { method: "POST" }); toast("Клип добавлен в очередь"); refreshBadge(); after();
-  }));
-  $$("[data-pmom]").forEach((b) => (b.onclick = () => {
-    const it = items[+b.dataset.pmom];
-    Object.assign(S.draft, { source_id: it.source_id, file: it.file }); saveDraft();
-    go(`#/clip?source=${encodeURIComponent(it.source_id)}&file=${encodeURIComponent(it.file)}&start=${it.start}&end=${it.end}`);
-  }));
-  $$("[data-pdel]").forEach((b) => (b.onclick = async () => {
-    if (!confirm("Убрать момент из плана? Готовый клип останется в «Клипах».")) return;
-    await api(`/api/plan/${items[+b.dataset.pdel].id}`, { method: "DELETE" }); after();
-  }));
-}
-
-async function renderKino(box, refresh) {
-  box.innerHTML = `<p class="muted pad">Загружаю…</p>`;
-  const [plan, lists] = await Promise.all([api("/api/plan"), api("/api/tmdb/lists" + (refresh ? "?refresh=1" : "")).catch((e) => ({ error: e.message }))]);
-  if (parseHash().name !== "discover" || S.discSec !== "kino") return;
-  const srcs = S.cfg.sources.filter((x) => x.enabled !== false);
-  const today = new Date(), p2 = (n) => String(n).padStart(2, "0");
-  const iso = `${today.getFullYear()}-${p2(today.getMonth() + 1)}-${p2(today.getDate())}`;
-  const items = plan.items.filter((x) => !x.published);
-  const kinoSrcs = srcs.filter((x) => x.type === "series" || x.type === "movie");
-  box.innerHTML = `<div class="card stack"><h2>Автоплан</h2>
-      <p class="muted small">Приложение само выберет моменты и разложит по дням — один в день.
-        Сериал: лучшие по рейтингу серии (TMDB), фильм: лучшие сцены. Оценка сцен — офлайн, без интернета.</p>
-      ${srcs.length ? `<label class="f" for="plSrc">Источник</label><select id="plSrc">${srcs.map((x) => `<option value="${esc(x.id)}">${esc(x.title)} (${esc(typeName(x.type))})</option>`).join("")}</select>
-      <div class="grid2"><div><label class="f" for="plN">Сколько дней</label><input type="number" id="plN" min="1" max="7" value="3"></div>
-        <div><label class="f" for="plD">С какого дня</label><input type="date" id="plD" value="${iso}"></div></div>
-      <label class="toggle"><span>Сразу сделать клипы</span><input type="checkbox" id="plClips" checked></label>
-      <button class="btn primary" id="plGo">Составить план</button><div id="plProg"></div>`
-      : `<p class="warn">Сначала добавьте источник в «Настройках».</p>`}</div>
-    <div class="card"><h2>План</h2>${items.length ? items.map((it, i) => planItemHtml(it, i)).join("") + `<div style="height:10px"></div><button class="btn ghost sm" id="plClear">Очистить план</button>`
-      : `<p class="muted">Пока пусто. Составьте план выше.</p>`}</div>
-    ${lists.error ? `<div class="card"><p class="err">${esc(lists.error)}</p></div>`
-      : !lists.configured ? `<div class="card stack"><h2>Рейтинги TMDB</h2>
-        <p>С ключом TMDB автоплан берёт серии с самым высоким рейтингом, а здесь видно, что популярно сейчас.
-          Ключ бесплатный: themoviedb.org → «Настройки» → «API» (пошагово — в инструкции, раздел «Моменты»).</p>
-        <a class="btn" href="#/settings">Ввести ключ в «Настройках»</a></div>`
-      : `${kinoSrcs.map((x) => `<div class="card" data-tsrc="${esc(x.id)}"><h2>${esc(x.title)}</h2><p class="muted small">Ищу в TMDB…</p></div>`).join("")}
-        ${[["trending", "В тренде за неделю"], ["top_tv", "Лучшие сериалы"], ["top_movies", "Лучшие фильмы"]].map(([k, n]) => `<details class="card"><summary><b>${n}</b></summary>
-          <ul class="list">${(lists[k] || []).map((t) => `<li><div class="item"><span class="t"><b>${esc(t.title)}</b>${t.year ? ` (${esc(t.year)})` : ""}
-            <br><span class="small muted">${t.type === "tv" ? "сериал" : "фильм"} · ★ ${fmtRating(t.rating)}</span>
-            ${t.source_id ? ` <span class="ok small">· есть у вас</span>` : ""}</span></div></li>`).join("")}</ul></details>`).join("")}`}`;
-  bindPlan(items, () => renderKino(box, false));
-  const cl = $("#plClear"); if (cl) cl.onclick = async () => { if (!confirm("Очистить весь план? Готовые клипы останутся.")) return; await api("/api/plan/clear", { method: "POST" }); renderKino(box, false); };
-  const go2 = $("#plGo");
-  if (go2) go2.onclick = async () => {
-    go2.disabled = true;
-    const params = { source_id: $("#plSrc").value, count: Math.max(1, Math.min(7, +$("#plN").value || 3)), start: $("#plD").value, make_clips: $("#plClips").checked };
-    const job = await api("/api/jobs", { method: "POST", body: { type: "plan", params } }).catch(() => null);
-    if (!job) { go2.disabled = false; return; }
-    const fin = await pollJob(job.id, (j) => { const el = $("#plProg"); if (el) el.innerHTML = bar(j.progress) + `<p class="muted small">${esc(j.stage)}</p>`; });
-    if (parseHash().name !== "discover") return;
-    if (fin.status !== "done") { go2.disabled = false; $("#plProg").innerHTML = `<p class="err">${esc(fin.error || "Не получилось")}</p>`; return; }
-    toast(`План готов: ${fin.result.items.length} дн.${params.make_clips ? ", клипы собираются" : ""}`); refreshBadge();
-    if ((fin.warnings || []).length) toast(fin.warnings[0], true);
-    renderKino(box, false);
-  };
-  if (lists.configured) for (const x of kinoSrcs) tmdbSource(x.id, refresh);
-}
-
-async function tmdbSource(id, refresh) {
-  const card = $(`[data-tsrc="${CSS.escape(id)}"]`);
-  if (!card) return;
-  let d;
-  try { d = await api(`/api/tmdb/source/${encodeURIComponent(id)}` + (refresh ? "?refresh=1" : "")); }
-  catch (e) { card.innerHTML += `<p class="err small">${esc(e.message)}</p>`; return; }
-  if (!card.isConnected) return;
-  const head = `<h2>${esc(d.title)}</h2>`;
-  if (!d.match) {
-    card.innerHTML = head + `<p class="small">Какое это название в TMDB?</p>${(d.candidates || []).length ? `<ul class="list">${d.candidates.map((c, i) => `<li><button class="item" data-tl="${i}">
-      <span class="t"><b>${esc(c.title)}</b>${c.year ? ` (${esc(c.year)})` : ""}<br><span class="muted small">${c.type === "tv" ? "сериал" : "фильм"} · ★ ${fmtRating(c.rating)}</span></span><span class="chev">›</span></button></li>`).join("")}</ul>`
-      : `<p class="muted small">Ничего не нашлось — проверьте название источника.</p>`}`;
-    $$("[data-tl]", card).forEach((b) => (b.onclick = async () => {
-      const c = d.candidates[+b.dataset.tl];
-      await api("/api/tmdb/link", { method: "POST", body: { source_id: id, tmdb_id: c.id, tmdb_type: c.type } }); tmdbSource(id, false);
-    }));
-    return;
-  }
-  const m = d.match;
-  const eps = (d.episodes || []).filter((e) => e.file).slice(0, 6);
-  card.innerHTML = head + `<p class="small">${esc(m.title)}${m.year ? ` (${esc(m.year)})` : ""} · ★ ${fmtRating(m.rating)} <a href="#" data-tun="1" class="muted">не то</a></p>
-    ${m.type === "tv" ? (eps.length ? `<p class="muted small">Лучшие серии из вашей папки:</p>${eps.map((e, i) => `<div class="mom"><div class="row">
-        <span class="tm">S${String(e.season).padStart(2, "0")}E${String(e.episode).padStart(2, "0")}</span><span class="grow"></span>
-        <span class="small">★ ${fmtRating(e.rating)} <span class="muted">(${e.votes})</span></span></div>
-        <span class="small wrap">«${esc(e.name)}»${e.used ? ' <span class="muted">· уже была</span>' : ""}</span>
-        <button class="btn sm primary" data-tep="${i}">Найти моменты</button></div>`).join("")}`
-      : `<p class="muted small">Не нашёл в папке файлов с номером серии в имени (S01E05, 1x05, «2 сезон 3 серия»).</p>`) : ""}`;
-  $("[data-tun]", card).onclick = async (ev) => {
-    ev.preventDefault(); await api("/api/tmdb/link", { method: "POST", body: { source_id: id, tmdb_id: 0 } }); tmdbSource(id, false);
-  };
-  $$("[data-tep]", card).forEach((b) => (b.onclick = () => {
-    const e = eps[+b.dataset.tep];
-    Object.assign(S.draft, { source_id: id, file: e.file }); saveDraft();
-    go(`#/clip?source=${encodeURIComponent(id)}&file=${encodeURIComponent(e.file)}&auto=mom`);
-  }));
-}
-
-// ------------------------------------------------------------------ «Русское»: русские и советские сериалы и фильмы (TMDB)
-const RU_KINDS = [["popular", "Популярные сейчас"], ["top", "Лучшие по рейтингу"], ["new", "Новинки за год"]];
-async function viewRu(_arg, q) {
-  const seq = S.seq;
-  await loadCfg();
-  if (staleSince(seq)) return;
-  S.ru = S.ru || { type: "tv", kind: "popular" };
-  const st = S.ru;
-  app.innerHTML = `<h1>Русское</h1>
-  <div class="seg" id="ruType"><button data-t="tv" class="${st.type === "tv" ? "on" : ""}">Сериалы</button><button data-t="movie" class="${st.type === "movie" ? "on" : ""}">Фильмы</button></div>
-  <div class="seg seg3" id="ruKind" style="margin-top:8px">${RU_KINDS.map(([k, n]) => `<button data-k="${k}" class="${st.kind === k ? "on" : ""}">${n}</button>`).join("")}</div>
-  <p class="muted small" style="margin:10px 2px">Русские и советские ${st.type === "tv" ? "сериалы" : "фильмы"} по данным TMDB. «Добавить в источники» —
-    и дальше как обычно: выберите папку, куда положили видео, и автоплан найдёт моменты.</p>
-  <div id="ruBox"><p class="muted pad">Загружаю…</p></div>`;
-  $$("#ruType button").forEach((b) => (b.onclick = () => { st.type = b.dataset.t; viewRu(); }));
-  $$("#ruKind button").forEach((b) => (b.onclick = () => { st.kind = b.dataset.k; viewRu(); }));
-  let page = 1, items = [];
-  const box = $("#ruBox");
-  const load = async (refresh) => {
-    let d;
-    try { d = await api(`/api/tmdb/ru?type=${st.type}&kind=${st.kind}&page=${page}` + (refresh ? "&refresh=1" : "")); }
-    catch (e) { box.innerHTML = `<p class="err pad">${esc(e.message)}</p>`; return; }
-    if (staleSince(seq) || !box.isConnected) return;
-    if (!d.configured) {
-      box.innerHTML = `<div class="card stack"><h2>Нужен ключ TMDB</h2>
-        <p>Списки берутся из TMDB. Ключ бесплатный: themoviedb.org → «Настройки» → «API» (пошагово — в инструкции, раздел 4.2).</p>
-        <a class="btn primary" href="#/settings">Ввести ключ в «Настройках»</a></div>`;
-      return;
-    }
-    items = items.concat(d.items || []);
-    box.innerHTML = `<div class="card">${items.length ? items.map((t, i) => `<div class="ruitem">
-        <b class="wrap">${i + 1}. ${esc(t.title)}${t.year ? ` (${esc(t.year)})` : ""}</b>
-        <span class="small">★ ${fmtRating(t.rating)} <span class="muted">· ${t.votes} голосов</span>${t.source_id ? ' · <span class="ok">есть у вас</span>' : ""}</span>
-        ${t.overview ? `<span class="muted small wrap">${esc(t.overview)}</span>` : ""}
-        <div class="row">${t.source_id ? `<a class="btn sm" href="#/source/${encodeURIComponent(t.source_id)}">Открыть источник</a>`
-          : `<button class="btn sm primary" data-add="${i}">Добавить в источники</button>`}
-          <a class="btn sm ghost" target="_blank" rel="noopener" href="https://www.themoviedb.org/${t.type}/${t.id}?language=ru-RU">TMDB ↗</a></div></div>`).join("")
-        : `<p class="muted">Ничего не нашлось.</p>`}
-      ${d.page < d.total_pages && page < 20 ? `<div style="height:10px"></div><button class="btn ghost" id="ruMore">Показать ещё</button>` : ""}</div>`;
-    $$("[data-add]", box).forEach((b) => (b.onclick = async () => {
-      const t = items[+b.dataset.add];
-      b.disabled = true;
-      const saved = await api("/api/sources", { method: "POST", body: { type: t.type === "tv" ? "series" : "movie", title: t.title,
-        tmdb_id: t.id, tmdb_type: t.type, enabled: true } }).catch(() => null);
-      if (!saved) { b.disabled = false; return; }
-      await loadCfg(true);
-      toast("Добавлено. Выберите папку с видео и сохраните");
-      go(`#/source/${encodeURIComponent(saved.id)}`);
-    }));
-    const more = $("#ruMore", box);
-    if (more) more.onclick = () => { more.disabled = true; page++; load(false); };
-  };
-  load(!!(q && q.get && q.get("refresh") === "1"));
 }
 
 // ------------------------------------------------------------------ «Клип» в приложении: сборка, готовые клипы, баннер
@@ -1156,58 +930,26 @@ function bindBanner(dr) {
   }
 }
 
-// ------------------------------------------------------------------ «Подборка»: мир и Россия, сериалы и фильмы
-function fmtVotes(n) { n = Number(n) || 0; return n >= 1e6 ? (n / 1e6).toFixed(1).replace(".", ",") + " млн" : n >= 1e3 ? Math.round(n / 1e3) + " тыс." : String(n); }
-async function viewPick(_arg, q) {
+// ------------------------------------------------------------------ «Стримеры» (приложение)
+async function viewStreamers() {
   const seq = S.seq;
-  await loadCfg();
+  await loadCfg(true);
   if (staleSince(seq)) return;
-  const st = (S.pick = S.pick || { region: "world", type: "tv", kind: "popular" });
-  const seg = (id, key, opts) => `<div class="seg" id="${id}">${opts.map(([v, n]) => `<button data-v="${v}" class="${st[key] === v ? "on" : ""}">${n}</button>`).join("")}</div>`;
-  app.innerHTML = `<h1>Подборка</h1>
-  ${seg("pkRegion", "region", [["world", "Мир"], ["ru", "Россия"]])}
-  <div style="height:8px"></div>${seg("pkType", "type", [["tv", "Сериалы"], ["movie", "Фильмы"]])}
-  <div style="height:8px"></div>${seg("pkKind", "kind", [["popular", "Популярное"], ["best", "Лучшее по IMDb"]])}
-  <div id="pkBox"><p class="muted pad">Загружаю…</p></div>`;
-  for (const [id, key] of [["pkRegion", "region"], ["pkType", "type"], ["pkKind", "kind"]]) {
-    $$(`#${id} button`).forEach((b) => (b.onclick = () => { st[key] = b.dataset.v; viewPick(); }));
-  }
-  let page = 1, items = [];
-  const box = $("#pkBox");
-  const load = async () => {
-    let d;
-    try { d = await api(`/api/tmdb/pick?region=${st.region}&type=${st.type}&kind=${st.kind}&page=${page}`); }
-    catch (e) { box.innerHTML = `<p class="err pad">${esc(e.message)}</p>`; return; }
-    if (staleSince(seq) || !box.isConnected) return;
-    if (!d.configured) {
-      box.innerHTML = `<div class="card stack" style="margin-top:12px"><h2>Нужен ключ TMDB</h2>
-        <p>Списки фильмов и сериалов берутся из TMDB. Ключ бесплатный (пошагово — в инструкции, раздел «Подборка»).</p>
-        <a class="btn primary" href="#/settings">Ввести ключ в «Настройках»</a></div>`;
-      return;
-    }
-    items = items.concat(d.items || []);
-    box.innerHTML = (d.imdb_loading ? `<p class="muted small" style="margin:10px 2px">Загружаю рейтинги IMDb (один раз в неделю, около 8 МБ)…</p>` : "")
-      + `<div class="card" style="margin-top:12px">${items.length ? items.map((t, i) => `<div class="ruitem">
-        <b class="wrap">${i + 1}. ${esc(t.title)}${t.year ? ` (${esc(t.year)})` : ""}</b>
-        <span class="small">${t.imdb_rating ? `<b>IMDb ★ ${fmtRating(t.imdb_rating)}</b> <span class="muted">(${fmtVotes(t.imdb_votes)})</span> · ` : ""}<span class="muted">TMDB ★ ${fmtRating(t.rating)}</span></span>
-        ${t.overview ? `<span class="muted small wrap">${esc(t.overview)}</span>` : ""}
-        <div class="row">${t.imdb_id ? `<a class="btn sm ghost" target="_blank" rel="noopener" href="https://www.imdb.com/title/${esc(t.imdb_id)}/">IMDb ↗</a>` : ""}
-          <a class="btn sm ghost" target="_blank" rel="noopener" href="https://www.themoviedb.org/${t.type}/${t.id}?language=ru-RU">TMDB ↗</a></div></div>`).join("")
-        : `<p class="muted">Ничего не нашлось.</p>`}
-      ${d.page < d.total_pages ? `<div style="height:10px"></div><button class="btn ghost" id="pkMore">Показать ещё</button>` : ""}</div>
-      <p class="muted small" style="margin:10px 2px">Рейтинги: IMDb (открытые данные IMDb, для личного использования) и TMDB.</p>`;
-    const more = $("#pkMore", box);
-    if (more) more.onclick = () => { more.disabled = true; page++; load(); };
-    if (d.imdb_loading && !S.pickPoll) {
-      S.pickPoll = true;
-      every(async () => {
-        const jobs = await api("/api/jobs").catch(() => []);
-        if (!jobs.some((j) => j.type === "imdb" && (j.status === "queued" || j.status === "running"))) { S.pickPoll = false; if (parseHash().name === "pick") viewPick(); }
-      }, 4000);
-    }
-  };
-  S.pickPoll = false;
-  load();
+  const list = S.cfg.sources;
+  app.innerHTML = `<h1>Стримеры</h1>
+  ${list.length ? `<div class="card"><ul class="list">${list.map((x) => `<li><div class="mom">
+      <div class="row"><b class="wrap grow">${esc(x.title)}</b>${x.enabled === false ? '<span class="muted small">выключен</span>' : ""}</div>
+      <span class="muted small wrap">${x.twitch_login ? `twitch.tv/${esc(x.twitch_login)} · ` : ""}папка: ${esc(x.folder || "не выбрана")}
+        · ${x.full_profile.layout === "split" ? (x.full_profile.cam_rect ? "вебкамера: рамка задана" : "вебкамера: рамка не задана") : "один кадр"}</span>
+      <div class="row"><a class="btn sm" href="#/source/${encodeURIComponent(x.id)}">Изменить</a>
+        ${x.full_profile.layout === "split" ? `<a class="btn sm" href="#/cam/${encodeURIComponent(x.id)}">Вебкамера</a>` : ""}
+        ${x.twitch_login ? `<a class="btn sm ghost" target="_blank" rel="noopener" href="https://www.twitch.tv/${encodeURIComponent(x.twitch_login)}">Twitch ↗</a>` : ""}</div>
+    </div></li>`).join("")}</ul></div>`
+    : `<div class="card stack"><h2>Пока никого</h2><p class="muted">Добавьте стримера: имя, Twitch-логин, папка с записями эфиров на телефоне и рамка вебкамеры.
+      Дальше «Клип» и ночная нарезка берут записи из этой папки.</p></div>`}
+  <a class="btn primary" href="#/source/new">Добавить стримера</a>
+  <p class="muted small" style="margin:12px 2px">Записи эфиров приложение не скачивает: кладите их в папку стримера сами
+    (обычно стример даёт к ним доступ в программе нарезок). Файл чата с тем же именем рядом — моменты по реакции зрителей.</p>`;
 }
 
 /** Ночная нарезка: папка, сколько клипов за ночь, состояние, «Нарезать сейчас». */
@@ -1218,32 +960,29 @@ async function nightCard() {
   if (!d || !card.isConnected) return;
   const n = d.settings || {};
   card.innerHTML = `<h2>Ночная нарезка</h2>
-    <p class="muted small">Ночью, когда телефон на зарядке и им не пользуются, приложение берёт следующие видео из папки,
-      находит в каждом лучший момент и собирает клипы по шаблону. Утром — уведомление, клипы в «Клип» → «Готовые клипы».</p>
+    <p class="muted small">Ночью, когда телефон на зарядке и им не пользуются, приложение берёт у каждого стримера самую свежую
+      запись эфира, находит в ней лучшие моменты (по чату, если он рядом, иначе по звуку) и собирает клипы по шаблону
+      с рамкой вебкамеры. Утром — уведомление, клипы в «Клип» → «Готовые клипы».</p>
     <label class="toggle"><span>Включена</span><input type="checkbox" id="ngOn" ${n.enabled ? "checked" : ""}></label>
-    <p class="wrap">Папка: <b id="ngFolder">${esc(n.folder_name || "не выбрана")}</b></p>
-    <button class="btn" id="ngPick">Выбрать папку на телефоне</button>
-    <label class="f" for="ngN">Клипов за ночь</label><input type="number" id="ngN" min="1" max="10" value="${n.per_night || 3}">
-    <p class="muted small">${d.last_run ? `Последний раз: ${fmtDate(d.last_run)}${(d.last_files || []).length ? " — " + esc(d.last_files.join(", ")) : ""}. ` : ""}Уже нарезано видео из папки: ${d.done_count}.</p>
+    <p class="small">Стримеров с папкой записей: <b>${d.streamers}</b>${d.streamers ? "" : ' — <a href="#/streamers">добавить</a>'}</p>
+    <label class="f" for="ngN">Клипов с одной записи</label><input type="number" id="ngN" min="1" max="5" value="${n.per_recording || 3}">
+    <p class="muted small">${d.last_run ? `Последний раз: ${fmtDate(d.last_run)}${(d.last_files || []).length ? " — " + esc(d.last_files.join(", ")) : ""}. ` : ""}Уже нарезано записей: ${d.done_count}.</p>
     <button class="btn primary" id="ngSave">Сохранить</button>
-    <div class="grid2"><button class="btn sm" id="ngNow">Нарезать сейчас</button><button class="btn sm ghost" id="ngReset">Начать папку заново</button></div>`;
-  const folder = { uri: n.folder_uri || "", name: n.folder_name || "" };
-  window.onFolderPicked = (o) => { folder.uri = o.uri; folder.name = o.name; $("#ngFolder").textContent = o.name; };
-  $("#ngPick").onclick = () => window.AndroidApp.pickFolder();
+    <div class="grid2"><button class="btn sm" id="ngNow">Нарезать сейчас</button><button class="btn sm ghost" id="ngReset">Начать заново</button></div>`;
+  const body = () => ({ night: { enabled: $("#ngOn").checked, per_recording: +$("#ngN").value || 3 } });
   $("#ngSave").onclick = async () => {
-    if ($("#ngOn").checked && !folder.uri) { toast("Выберите папку", true); return; }
-    await api("/api/settings", { method: "PUT", body: { night: { enabled: $("#ngOn").checked, folder_uri: folder.uri, folder_name: folder.name, per_night: +$("#ngN").value || 3 } } });
+    await api("/api/settings", { method: "PUT", body: body() });
     toast($("#ngOn").checked ? "Ночная нарезка включена" : "Ночная нарезка выключена"); nightCard();
   };
   $("#ngNow").onclick = async () => {
-    if (!folder.uri) { toast("Сначала выберите папку и сохраните", true); return; }
-    await api("/api/settings", { method: "PUT", body: { night: { enabled: $("#ngOn").checked, folder_uri: folder.uri, folder_name: folder.name, per_night: +$("#ngN").value || 3 } } });
+    if (!d.streamers) { toast("Сначала добавьте стримера с папкой записей", true); return; }
+    await api("/api/settings", { method: "PUT", body: body() });
     await api("/api/jobs", { method: "POST", body: { type: "night", params: {} } });
     toast("Нарезаю — прогресс на вкладке «Клип»"); go("#/clip");
   };
   $("#ngReset").onclick = async () => {
-    if (!confirm("Начать папку заново? Следующая нарезка возьмёт видео с начала папки.")) return;
-    await api("/api/night/reset", { method: "POST" }); toast("Папка начнётся заново"); nightCard();
+    if (!confirm("Начать заново? Следующая нарезка снова возьмёт уже нарезанные записи.")) return;
+    await api("/api/night/reset", { method: "POST" }); toast("Начнём заново"); nightCard();
   };
 }
 
@@ -1278,31 +1017,32 @@ async function viewSource(id) {
   await loadCfg(true);
   if (staleSince(seq)) return;
   const isNew = id === "new" || !id;
-  const s = isNew ? { type: "series", title: "", folder: "", enabled: true, profile: {} } : S.cfg.sources.find((x) => x.id === id);
+  const s = isNew ? { type: APP ? "stream" : "series", title: "", folder: "", enabled: true, profile: {} } : S.cfg.sources.find((x) => x.id === id);
   if (!s) { app.innerHTML = `<h1>Источник</h1><p class="err">Источник не найден.</p>`; return; }
   const folders = (await api("/api/folders")).folders;
   const p = Object.assign({ layout: "single", mirror: true, subtitles: true, sub_style: "classic", language: "auto", single_zoom: 1,
     split_screen_h: 0.45, split_gap_h: 0.1, split_cam_h: 0.45, screen_fit: "crop" }, s.full_profile || {});
-  let type = s.type, layout = APP || isNew ? "single" : p.layout;
+  let type = s.type, layout = APP ? (isNew ? "split" : p.layout) : isNew ? "single" : p.layout;
   const typeBtns = () => S.cfg.types.map((t) => `<button data-t="${t}" class="${t === type ? "on" : ""}">${esc(typeName(t))}</button>`).join("");
-  app.innerHTML = `<h1>${isNew ? "Новый источник" : "Источник"}</h1>
+  app.innerHTML = `<h1>${APP ? (isNew ? "Новый стример" : "Стример") : isNew ? "Новый источник" : "Источник"}</h1>
   <div class="card">
-    <label class="f" for="sT">Название</label><input id="sT" value="${esc(s.title)}" placeholder="Например: Во все тяжкие">
-    <label class="f">Тип</label><div class="seg" id="tSeg">${typeBtns()}</div>
-    <label class="f" for="sF">Папка с видео</label>
+    <label class="f" for="sT">${APP ? "Имя стримера" : "Название"}</label><input id="sT" value="${esc(s.title)}" placeholder="${APP ? "Например: Стример Вася" : "Например: Во все тяжкие"}">
+    <div ${APP ? "hidden" : ""}><label class="f">Тип</label><div class="seg" id="tSeg">${typeBtns()}</div></div>
+    <label class="f" for="sF">${APP ? "Папка с записями эфиров" : "Папка с видео"}</label>
     ${APP ? `<p class="wrap"><b id="sFname">${esc(s.folder || "не выбрана")}</b></p>
       <button class="btn" id="bFolder">Выбрать папку на телефоне</button>
-      <p class="muted small">Программа увидит только эту папку. Положите туда серии или фильм.</p>`
+      <p class="muted small">Приложение увидит только эту папку. Кладите туда записи эфиров (и файлы чата с тем же именем, если есть).</p>`
     : `<input id="sF" list="fl" value="${esc(s.folder)}" placeholder="Например: breaking_bad">
     <datalist id="fl">${folders.map((f) => `<option value="${esc(f)}">`).join("")}</datalist>
     <p class="muted small wrap">Это подпапка в общей папке ${esc((await loadStatus()).media_root)}. Если её нет — создам.</p>`}
-    <div id="ytBox" ${APP ? "hidden" : ""}><label class="f" for="sY">YouTube: ID канала (необязательно)</label><input id="sY" value="${esc(s.youtube_channel_id || "")}" placeholder="UCxxxxxxxxxxxxxxxxxxxxxx">
-      <p class="muted small">Нужен, чтобы на экране «Сегодня» видеть свежее видео. ID начинается с UC.</p>
-      <label class="f" for="sTw">Twitch: логин (необязательно)</label><input id="sTw" value="${esc(s.twitch_login || "")}"></div>
+    <div id="ytBox"><div ${APP ? "hidden" : ""}><label class="f" for="sY">YouTube: ID канала (необязательно)</label><input id="sY" value="${esc(s.youtube_channel_id || "")}" placeholder="UCxxxxxxxxxxxxxxxxxxxxxx">
+      <p class="muted small">Нужен, чтобы на экране «Сегодня» видеть свежее видео. ID начинается с UC.</p></div>
+      <label class="f" for="sTw">Twitch: логин</label><input id="sTw" value="${esc(s.twitch_login || "")}" placeholder="из адреса twitch.tv/логин" autocapitalize="off">
+      ${APP ? `<p class="muted small">Для ссылки на канал и хэштега в подписи.</p>` : ""}</div>
     <label class="toggle"><span>Источник включён</span><input type="checkbox" id="sEn" ${s.enabled !== false ? "checked" : ""}></label>
   </div>
   <div class="card"><h2>Профиль нарезки</h2>
-    <div ${APP ? "hidden" : ""}><label class="f">Раскладка</label>
+    <div><label class="f">Раскладка</label>
     <div class="seg" id="lSeg"><button data-l="single">Один кадр</button><button data-l="split">Экран + вебкамера</button></div></div>
     <div id="singleOpts"><label class="f" for="pZ">Увеличение кадра: <span id="pZv">${Number(p.single_zoom).toFixed(2)}</span>×</label>
       <input type="range" id="pZ" min="1" max="2" step="0.05" value="${p.single_zoom}">
@@ -1320,16 +1060,16 @@ async function viewSource(id) {
     <label class="f" for="pSt">Профиль субтитров</label><select id="pSt">${Object.entries(S.cfg.sub_styles).map(([v, n]) => `<option value="${v}" ${p.sub_style === v ? "selected" : ""}>${esc(n)}</option>`).join("")}</select>
     <label class="f" for="pL">Язык речи</label><select id="pL">${[["auto", "Определять автоматически"], ["ru", "Русский"], ["en", "English"], ["uk", "Українська"]].map(([v, n]) => `<option value="${v}" ${p.language === v ? "selected" : ""}>${n}</option>`).join("")}</select>
   </div>
-  <button class="btn primary" id="bSave">Сохранить источник</button>
-  ${isNew ? "" : `<div style="height:10px"></div><button class="btn danger" id="bDel">Удалить источник</button>`}`;
+  <button class="btn primary" id="bSave">${APP ? "Сохранить" : "Сохранить источник"}</button>
+  ${isNew ? "" : `<div style="height:10px"></div><button class="btn danger" id="bDel">${APP ? "Удалить стримера" : "Удалить источник"}</button>`}`;
 
   const syncType = () => {
     $$("#tSeg button").forEach((b) => b.classList.toggle("on", b.dataset.t === type));
-    $("#ytBox").hidden = APP || !(type === "stream" || type === "blogger");
+    $("#ytBox").hidden = !(type === "stream" || type === "blogger");
   };
   const syncLayout = () => {
     $$("#lSeg button").forEach((b) => b.classList.toggle("on", b.dataset.l === layout));
-    $("#singleOpts").hidden = layout !== "single"; $("#splitOpts").hidden = APP || layout !== "split";
+    $("#singleOpts").hidden = layout !== "single"; $("#splitOpts").hidden = layout !== "split";
   };
   const syncSplit = () => {
     let sh = +$("#pS").value, g = +$("#pG").value;
@@ -1368,18 +1108,18 @@ async function viewSource(id) {
     if (!body.folder) body.folder = undefined;
     const saved = await api("/api/sources", { method: "POST", body });
     await loadCfg(true); toast("Источник сохранён");
-    if (isNew && layout === "split") go(`#/cam/${encodeURIComponent(saved.id)}`); else go("#/settings");
+    if (isNew && layout === "split") go(`#/cam/${encodeURIComponent(saved.id)}`); else go(APP ? "#/streamers" : "#/settings");
   };
   const d = $("#bDel"); if (d) d.onclick = async () => {
-    if (!confirm(`Удалить источник «${s.title}»? Видео в папке останутся.`)) return;
-    await api("/api/sources/" + encodeURIComponent(s.id), { method: "DELETE" }); await loadCfg(true); toast("Источник удалён"); go("#/settings");
+    if (!confirm(`Удалить ${APP ? "стримера" : "источник"} «${s.title}»? Видео в папке останутся.`)) return;
+    await api("/api/sources/" + encodeURIComponent(s.id), { method: "DELETE" }); await loadCfg(true); toast(APP ? "Стример удалён" : "Источник удалён"); go(APP ? "#/streamers" : "#/settings");
   };
 }
 
 // ------------------------------------------------------------------ старт
 if (!APP && "serviceWorker" in navigator && window.isSecureContext) navigator.serviceWorker.register("/sw.js").catch(() => {});
 if (APP) {
-  $('#nav a[data-tab="pick"]').hidden = false;
-  for (const k of ["today", "discover", "ru", "queue", "clips"]) $(`#nav a[data-tab="${k}"]`).hidden = true;
+  $('#nav a[data-tab="streamers"]').hidden = false;
+  for (const k of ["today", "queue", "clips"]) $(`#nav a[data-tab="${k}"]`).hidden = true;
 }
 route(); refreshBadge();

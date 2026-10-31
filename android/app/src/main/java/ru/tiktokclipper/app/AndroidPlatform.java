@@ -58,6 +58,7 @@ public class AndroidPlatform implements Platform {
     final Store store;
     private final Map<String, Uri> uriCache = new ConcurrentHashMap<>();
     private final Map<String, Uri> srtCache = new ConcurrentHashMap<>();
+    private final Map<String, Uri> chatCache = new ConcurrentHashMap<>(); // файлы чата рядом с записью эфира
 
     AndroidPlatform(Context ctx, Store store) {
         this.ctx = ctx;
@@ -160,6 +161,10 @@ public class AndroidPlatform implements Platform {
                         srtCache.put(id, doc);
                         continue;
                     }
+                    if (ru.tiktokclipper.core.ChatMoments.isChatName(name)) {
+                        chatCache.put(id, doc);
+                        continue;
+                    }
                     if (!isVideoName(name)) continue;
                     uriCache.put(id, doc);
                     out.add(file(name, id, c.getLong(2), c.getLong(3) / 1000.0));
@@ -168,6 +173,7 @@ public class AndroidPlatform implements Platform {
                 throw new ApiError(403, "Нет доступа к папке источника. Выберите папку заново в «Настройки» → источник.");
             }
         }
+        for (JSONObject f : out) if (chatKey(f.optString("path")) != null) f.put("chat", true);
         Collections.sort(out, (a, b) -> naturalCompare(a.optString("name"), b.optString("name")));
         return new JSONArray(out);
     }
@@ -288,9 +294,42 @@ public class AndroidPlatform implements Platform {
         Uri u = resolve(fileId);
         JSONObject o = probeUri(u);
         o.put("has_srt", sidecarSrt(fileId) != null);
+        o.put("has_chat", chatKey(fileId) != null);
         return o;
     }
 
+
+    /** Ключ файла чата рядом с видео (то же имя: «эфир.json», «эфир.chat.txt», «эфир_chat.json.gz») или null. */
+    private String chatKey(String fileId) {
+        int slash = fileId.indexOf('/');
+        if (slash <= 0 || fileId.startsWith(PICKED)) return null;
+        String prefix = fileId.substring(0, slash + 1), name = fileId.substring(slash + 1);
+        String stem = name.contains(".") ? name.substring(0, name.lastIndexOf('.')) : name;
+        String best = null;
+        for (String k : chatCache.keySet()) {
+            if (!k.startsWith(prefix)) continue;
+            String fn = k.substring(prefix.length());
+            if (!ru.tiktokclipper.core.ChatMoments.isChatFor(fn, stem)) continue;
+            if (best == null || fn.length() < best.length() - prefix.length()) best = k; // точнее всего — самое короткое имя
+        }
+        return best;
+    }
+
+    /** Файл чата рядом с видео или null. */
+    Uri sidecarChat(String fileId) {
+        if (chatCache.isEmpty()) {
+            try {
+                resolve(fileId);
+                int slash = fileId.indexOf('/');
+                JSONObject src = slash > 0 ? store.getSource(fileId.substring(0, slash)) : null;
+                if (src != null) listFiles(src);
+            } catch (Exception ignored) {
+                return null;
+            }
+        }
+        String k = chatKey(fileId);
+        return k == null ? null : chatCache.get(k);
+    }
 
     JSONObject probeUri(Uri u) throws Exception {
         JSONObject o = new JSONObject();
