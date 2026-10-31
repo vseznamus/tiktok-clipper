@@ -461,7 +461,18 @@ public class AndroidPlatform implements Platform {
 
     // ------------------------------------------------------------ сведения о системе
 
+    private static final java.util.Map<String, Boolean> ENCODERS = new ConcurrentHashMap<>();
+
+    /** Есть ли аппаратный/программный кодировщик (опрос кодеков небыстрый — запоминаем). */
     static boolean hasEncoder(String mime) {
+        Boolean cached = ENCODERS.get(mime);
+        if (cached != null) return cached;
+        boolean v = probeEncoder(mime);
+        ENCODERS.put(mime, v);
+        return v;
+    }
+
+    private static boolean probeEncoder(String mime) {
         for (android.media.MediaCodecInfo info : new MediaCodecList(MediaCodecList.REGULAR_CODECS).getCodecInfos()) {
             if (!info.isEncoder()) continue;
             for (String t : info.getSupportedTypes()) if (t.equalsIgnoreCase(mime)) return true;

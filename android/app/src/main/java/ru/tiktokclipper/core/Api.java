@@ -20,7 +20,7 @@ import java.util.Locale;
  * другие приложения на телефоне не смогут управлять нарезкой.
  */
 public class Api implements MiniHttp.Handler {
-    public static final String VERSION = "3.0.0-android";
+    public static final String VERSION = "3.0.1-android";
     public static final String COOKIE = "clipper_k";
 
     private final Store store;

@@ -92,6 +92,31 @@ public class AppLogicTest {
             check(mono.length == 1 && Math.abs(mono[0]) < 1e-6, "моно");
         });
 
+        test("экран не ждёт распознавание: проверка Whisper отвечает, пока идёт транскрипция", () -> {
+            Class.forName("ru.tiktokclipper.app.WhisperAsr", true, AppLogicTest.class.getClassLoader()); // в приложении класс уже загружен
+            final java.util.concurrent.CountDownLatch held = new java.util.concurrent.CountDownLatch(1), release = new java.util.concurrent.CountDownLatch(1);
+            Thread busy = new Thread(() -> {
+                synchronized (WhisperAsr.class) { // так держит блокировку идущее распознавание
+                    held.countDown();
+                    try { release.await(); } catch (InterruptedException ignored) { }
+                }
+            });
+            busy.start();
+            held.await();
+            final boolean[] got = {false};
+            Thread probe = new Thread(() -> {
+                try {
+                    WhisperAsr.available(null); // на JVM нет нативной библиотеки и android.util.Log — важно лишь, что вызов не ждёт
+                } catch (Throwable ignored) {
+                }
+                got[0] = true;
+            });
+            probe.start();
+            probe.join(2000);
+            release.countDown();
+            busy.join();
+            check(got[0], "проверка Whisper ждала окончания распознавания — экраны зависали на «Загрузке»");
+        });
         test("Whisper: разбор слов, сдвиг времени, кириллица, отсев «титров»", () -> {
             String raw = "L\tru\n"
                     + "S\t0\t0\t250\t0.010\n"

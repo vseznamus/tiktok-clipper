@@ -46,8 +46,15 @@ function toast(msg, isErr = false) {
 async function api(path, opts = {}) {
   const o = { method: opts.method || "GET", headers: {} };
   if (opts.body !== undefined) { o.headers["Content-Type"] = "application/json"; o.body = JSON.stringify(opts.body); }
+  // не ждать вечно: если ответа нет 30 с — сообщить, а не висеть на «Загрузке»
+  const ctl = typeof AbortController !== "undefined" ? new AbortController() : null;
+  const timer = ctl ? setTimeout(() => ctl.abort(), 30000) : null;
+  if (ctl) o.signal = ctl.signal;
   let r;
-  try { r = await fetch(path, o); } catch (e) { toast("Сервер не отвечает. Он запущен?", true); throw e; }
+  try { r = await fetch(path, o); } catch (e) {
+    toast(APP ? "Приложение не отвечает — подождите и нажмите «Повторить»" : "Сервер не отвечает. Он запущен?", true);
+    throw new Error(APP ? "Приложение не ответило вовремя." : "Сервер не отвечает.");
+  } finally { if (timer) clearTimeout(timer); }
   if (r.status === 401) {
     if (APP) toast("Нет доступа к данным. Закройте приложение и откройте снова.", true); else location.href = "/login";
     throw new Error("auth");
@@ -89,7 +96,14 @@ async function route() {
   const fn = routes[r.name] || (APP ? viewClip : viewToday);
   const tab = { cam: APP ? "streamers" : "clip", clipview: APP ? "clip" : "clips", source: APP ? "streamers" : "settings" }[r.name] || r.name;
   $$("#nav a").forEach((a) => a.classList.toggle("on", a.dataset.tab === tab));
-  try { await fn(r.arg, r.q); } catch (e) { if (e.message !== "auth") app.innerHTML += `<p class="err pad">${esc(e.message)}</p>`; }
+  try { await fn(r.arg, r.q); } catch (e) {
+    if (e.message !== "auth") {
+      if (/Загрузка/.test(app.innerText) && app.innerText.length < 40) app.innerHTML = "";
+      app.innerHTML += `<div class="card stack" style="margin-top:12px"><p class="err">${esc(e.message)}</p>
+        <button class="btn" id="bRetry">Повторить</button></div>`;
+      const b = $("#bRetry"); if (b) b.onclick = () => route();
+    }
+  }
   window.scrollTo(0, 0);
 }
 window.addEventListener("hashchange", route);

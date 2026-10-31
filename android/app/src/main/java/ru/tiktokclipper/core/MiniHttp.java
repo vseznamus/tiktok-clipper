@@ -161,7 +161,7 @@ public class MiniHttp {
     }
 
     private final Handler handler;
-    private final ExecutorService pool = Executors.newFixedThreadPool(8);
+    private final ExecutorService pool = Executors.newFixedThreadPool(24); // запас, чтобы долгий запрос не занимал все места
     private ServerSocket server;
     private volatile boolean running;
 

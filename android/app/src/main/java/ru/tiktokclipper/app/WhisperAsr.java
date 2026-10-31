@@ -38,11 +38,22 @@ final class WhisperAsr {
 
     private static native byte[] nativeTranscribe(long handle, float[] pcm, String lang, int threads, Listener l);
 
-    private static Boolean libOk;
+    private static volatile Boolean libOk;
     private static String libError = "", sysInfo = "";
+    /** Отдельная блокировка для загрузки библиотеки: распознавание (минуты) держит WhisperAsr.class,
+     *  и проверка «доступен ли Whisper» из экрана настроек не должна его ждать. */
+    private static final Object LIB = new Object();
 
     /** Загружает нативную библиотеку один раз. false — Whisper на этом телефоне недоступен. */
-    static synchronized boolean available(Context ctx) {
+    static boolean available(Context ctx) {
+        Boolean ok = libOk;
+        if (ok != null) return ok;
+        synchronized (LIB) {
+            return load(ctx);
+        }
+    }
+
+    private static boolean load(Context ctx) {
         if (libOk != null) return libOk;
         try {
             System.loadLibrary("narezka_whisper");
