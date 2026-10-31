@@ -77,7 +77,7 @@ async function pollJob(id, onUpdate) {
 function bar(frac) { return `<div class="progress"><i style="width:${Math.round((frac || 0) * 100)}%"></i></div>`; }
 
 // ------------------------------------------------------------------ роутер
-const routes = { streamers: viewStreamers, today: viewToday, clip: viewClip, cam: viewCam, queue: viewQueue, clips: viewClips,
+const routes = { streamers: viewStreamers, twitch: viewTwitch, today: viewToday, clip: viewClip, cam: viewCam, queue: viewQueue, clips: viewClips,
   clipview: viewClipView, settings: viewSettings, source: viewSource };
 
 function parseHash() {
@@ -94,7 +94,7 @@ async function route() {
   // в приложении — «Стримеры», «Клип», «Настройки»; старые адреса ведут туда
   if (APP && { today: 1, discover: 1, ru: 1, pick: 1, queue: 1, clips: 1 }[r.name]) { location.replace("#/clip"); return; }
   const fn = routes[r.name] || (APP ? viewClip : viewToday);
-  const tab = { cam: APP ? "streamers" : "clip", clipview: APP ? "clip" : "clips", source: APP ? "streamers" : "settings" }[r.name] || r.name;
+  const tab = { cam: APP ? "streamers" : "clip", clipview: APP ? "clip" : "clips", source: APP ? "streamers" : "settings", twitch: "streamers" }[r.name] || r.name;
   $$("#nav a").forEach((a) => a.classList.toggle("on", a.dataset.tab === tab));
   try { await fn(r.arg, r.q); } catch (e) {
     if (e.message !== "auth") {
@@ -771,6 +771,7 @@ async function viewSettings() {
     <button class="btn primary" id="bSched">Сохранить расписание</button></div>`}
 
   ${APP ? `<div class="card stack" id="nightCard"><h2>Ночная нарезка</h2><p class="muted pad">Загружаю…</p></div>` : ""}
+  ${APP ? twKeysCard(se) : ""}
   ${APP ? appAsrCard(st, se) : `  <div class="card"><h2>Распознавание речи</h2>
     <p class="small">faster-whisper: ${asr["faster-whisper"].ok ? '<span class="ok">установлен</span>' : `<span class="muted">${esc(asr["faster-whisper"].message)}</span>`}</p>
     <p class="small">whisper.cpp: ${asr["whisper.cpp"].ok ? `<span class="ok">установлен</span> · модели: ${esc(asr["whisper.cpp"].models.join(", ") || "нет")}` : `<span class="muted">${esc(asr["whisper.cpp"].message)}</span>`}</p>
@@ -823,7 +824,7 @@ async function viewSettings() {
     if (parseHash().name !== "settings") return;
     if (fin.status === "done") { toast("Модель удалена"); viewSettings(); } else { b.disabled = false; toast(fin.error || "Не получилось"); }
   }));
-  if (APP) nightCard();
+  if (APP) { nightCard(); bindTwKeys(); }
   $("#bAsr").onclick = async () => {
     const body = { asr_backend: $("#aB").value, asr_model: $("#aM").value, asr_language: $("#aL").value, moment_len: +$("#mL").value };
     if ($("#vP")) body.x264_preset = $("#vP").value;
@@ -962,8 +963,121 @@ async function viewStreamers() {
     : `<div class="card stack"><h2>Пока никого</h2><p class="muted">Добавьте стримера: имя, Twitch-логин, папка с записями эфиров на телефоне и рамка вебкамеры.
       Дальше «Клип» и ночная нарезка берут записи из этой папки.</p></div>`}
   <a class="btn primary" href="#/source/new">Добавить стримера</a>
+  ${list.some((x) => x.twitch_login) ? `<div style="height:10px"></div><a class="btn" href="#/twitch">Эфиры и клипы зрителей</a>` : ""}
   <p class="muted small" style="margin:12px 2px">Записи эфиров приложение не скачивает: кладите их в папку стримера сами
     (обычно стример даёт к ним доступ в программе нарезок). Файл чата с тем же именем рядом — моменты по реакции зрителей.</p>`;
+}
+
+// ------------------------------------------------------------------ Twitch по ключам: эфиры и клипы зрителей
+const TW_KEYS = [["kTwId", "twitch_client_id", "Client ID"], ["kTwSec", "twitch_client_secret", "Client Secret"]];
+function twKeysCard(se) {
+  return `<div class="card stack"><h2>Ключи Twitch</h2>
+    <p class="muted small">Необязательно. С ключами видны записи эфиров и моменты, из которых зрители нарезали больше всего клипов,
+      а ночная нарезка берёт эти моменты для записи с той же датой. Ключи хранятся только на телефоне.
+      Где взять: dev.twitch.tv/console → Applications → Register Your Application.</p>
+    ${TW_KEYS.map(([id, k, label]) => `<label class="f" for="${id}">${label}</label>
+      <input id="${id}" autocomplete="off" autocapitalize="off" spellcheck="false"
+        placeholder="${se[k + "_set"] ? `сохранён (${esc(se[k + "_hint"])}) — вставьте новый, чтобы заменить` : "не задан"}">`).join("")}
+    <button class="btn primary" id="bTwKeys">Сохранить ключи</button>
+    <button class="btn ghost sm" id="bTwDel">Стереть ключи</button></div>`;
+}
+function bindTwKeys() {
+  const b = $("#bTwKeys");
+  if (!b) return;
+  const send = async (body, msg) => { await api("/api/settings", { method: "PUT", body }); await loadCfg(true); toast(msg); viewSettings(); };
+  b.onclick = async () => {
+    const body = {};
+    for (const [id, k] of TW_KEYS) { const v = $("#" + id).value.trim(); if (v) body[k] = v; }
+    if (!Object.keys(body).length) { toast("Вставьте ключи в поля", true); return; }
+    await send(body, "Ключи сохранены");
+  };
+  $("#bTwDel").onclick = async () => {
+    if (!confirm("Стереть ключи Twitch с телефона?")) return;
+    await send(Object.fromEntries(TW_KEYS.map(([, k]) => [k, ""])), "Ключи стёрты");
+  };
+}
+
+/** Эфиры стримеров и моменты клипов зрителей (Twitch, по ключам). */
+async function viewTwitch(_arg, q) {
+  const seq = S.seq;
+  await loadCfg();
+  if (staleSince(seq)) return;
+  app.innerHTML = `<h1>Эфиры и клипы</h1>
+  <p class="muted small" style="margin:0 2px 10px">Моменты, из которых зрители нарезали больше всего клипов. «Резать» — выбрать запись этого эфира из папки стримера.</p>
+  <div id="twBox"><p class="muted pad">Загружаю…</p></div>
+  <button class="btn ghost sm" id="twRef">Обновить</button>`;
+  $("#twRef").onclick = () => load(true);
+  load(q && q.get && q.get("refresh") === "1");
+  async function load(refresh) {
+    const box = $("#twBox");
+    box.innerHTML = `<p class="muted pad">Загружаю…</p>`;
+    let d;
+    try { d = await api("/api/discover/twitch" + (refresh ? "?refresh=1" : "")); } catch (e) { box.innerHTML = `<p class="err pad">${esc(e.message)}</p>`; return; }
+    if (staleSince(seq) || !box.isConnected) return;
+    if (!d.configured) {
+      box.innerHTML = `<div class="card stack"><h2>Нужны ключи Twitch</h2><p>Введите Client ID и Client Secret в «Настройки» → «Ключи Twitch».</p>
+        <a class="btn primary" href="#/settings">Открыть «Настройки»</a></div>`;
+      return;
+    }
+    if (!d.has_sources) { box.innerHTML = `<div class="card stack"><p>У стримеров не указан Twitch-логин. «Стримеры» → «Изменить» → «Twitch: логин».</p></div>`; return; }
+    const g = d.streamers;
+    box.innerHTML = g.map((x, gi) => `<div class="card"><h2>${esc(x.name || x.title)}</h2>
+      ${x.ok === false ? `<p class="err">${esc(x.error)}</p>` : ""}
+      ${(x.vods || []).map((v, vi) => `<div class="vod"><b class="wrap">${esc(v.title)}</b>
+        <p class="muted small">${fmtDay(v.created_at)} · ${fmt(v.duration, false)}${v.file ? ` · файл: ${esc(v.file.split("/").pop())}` : ""}</p>
+        ${(v.moments || []).length ? v.moments.map((m, mi) => `<div class="mom"><div class="row"><span class="tm">${fmt(m.t, false)}</span><span class="grow"></span>
+            <span class="small muted">клипов: ${m.clips} · ${fmtNum(m.views)} просм.</span></div>
+          <span class="small wrap">«${esc(m.title)}»</span>
+          <div class="row"><button class="btn sm primary" data-cut="${gi}:${vi}:${mi}">Резать</button>
+            <a class="btn sm ghost" target="_blank" rel="noopener" href="${esc(m.clip_url)}">Клип ↗</a></div></div>`).join("")
+          : `<p class="muted small">Зрители ещё не нарезали клипов из этой записи.</p>`}</div>`).join("")
+        || (x.ok === false ? "" : `<p class="muted">Записей эфиров нет (или стример их не сохраняет).</p>`)}</div>`).join("");
+    $$("[data-cut]", box).forEach((b) => (b.onclick = async () => {
+      const [gi, vi, mi] = b.dataset.cut.split(":").map(Number);
+      const x = g[gi], v = x.vods[vi], m = v.moments[mi];
+      let file = v.file;
+      if (!file) {
+        file = await pickFileFor(x.source_id, v);
+        if (!file) return;
+        await api("/api/discover/link", { method: "POST", body: { key: v.key, file } });
+      }
+      const mlen = Number(S.cfg.settings.moment_len) || 30;
+      const start = Math.max(0, m.t - 3), end = Math.min(start + 180, Math.max(start + mlen, (m.end || 0) + 2));
+      const src = file.startsWith("_picked/") ? "" : x.source_id;
+      Object.assign(S.draft, { source_id: src, file, start, end }); saveDraft();
+      go(`#/clip?source=${encodeURIComponent(src)}&file=${encodeURIComponent(file)}&start=${start.toFixed(1)}&end=${end.toFixed(1)}`);
+    }));
+  }
+}
+function fmtNum(n) { n = Number(n) || 0; return n >= 1e6 ? (n / 1e6).toFixed(1).replace(".0", "") + " млн" : n >= 1e3 ? (n / 1e3).toFixed(1).replace(".0", "") + " тыс." : String(n); }
+function fmtDay(iso) { const d = new Date(iso); return isNaN(d) ? "" : `${d.getDate()} ${MON[d.getMonth()]}`; }
+
+/** Какой файл из папки стримера — эта запись? Дата эфира в имени файла подсказывает ответ. */
+function pickFileFor(sourceId, item) {
+  return new Promise(async (resolve) => {
+    const data = await api("/api/files?source=" + encodeURIComponent(sourceId)).catch(() => ({ files: [] }));
+    const d = new Date(item.created_at), p2 = (n) => String(n).padStart(2, "0");
+    const keys = isNaN(d) ? [] : [`${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())}`, `${d.getFullYear()}${p2(d.getMonth() + 1)}${p2(d.getDate())}`,
+      `${p2(d.getDate())}.${p2(d.getMonth() + 1)}.${d.getFullYear()}`, `${d.getFullYear()}_${p2(d.getMonth() + 1)}_${p2(d.getDate())}`];
+    const guess = (f) => keys.some((k) => f.name.includes(k));
+    const files = [...data.files].sort((a, b) => guess(b) - guess(a) || (b.mtime || 0) - (a.mtime || 0));
+    const sh = document.createElement("div");
+    sh.className = "sheet";
+    sh.innerHTML = `<div><h2>Какой файл — эта запись?</h2>
+      <p class="muted small wrap">«${esc(item.title)}» · ${fmtDay(item.created_at)} · ${fmt(item.duration, false)}</p>
+      <p class="muted small">Выберите запись из папки стримера. Приложение запомнит выбор.</p>
+      ${files.length ? `<ul class="list">${files.map((f, i) => `<li><button class="item" data-i="${i}"><span class="t"><b class="wrap">${esc(f.name)}</b><br>
+        <span class="muted small">${fmtSize(f.size)}${guess(f) ? " · ★ похоже, это она (дата в имени)" : ""}</span></span><span class="chev">›</span></button></li>`).join("")}</ul>`
+        : `<p class="warn">В папке стримера нет записей.</p>`}
+      <button class="btn ghost" id="shPick">Выбрать видео на телефоне</button>
+      <button class="btn ghost" id="shCancel">Отмена</button></div>`;
+    document.body.appendChild(sh);
+    const done = (v) => { sh.remove(); resolve(v); };
+    $$("[data-i]", sh).forEach((b) => (b.onclick = () => done(files[+b.dataset.i].path)));
+    $("#shCancel", sh).onclick = () => done(null);
+    sh.onclick = (e) => { if (e.target === sh) done(null); };
+    $("#shPick", sh).onclick = () => { window.onVideoPicked = (path) => done(path); window.AndroidApp.pickVideo(); };
+  });
 }
 
 /** Ночная нарезка: папка, сколько клипов за ночь, состояние, «Нарезать сейчас». */

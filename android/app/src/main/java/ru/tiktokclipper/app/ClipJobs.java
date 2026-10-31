@@ -385,8 +385,26 @@ final class ClipJobs {
             if (newest == null) continue;
             String file = newest.getString("path");
             try {
-                JSONObject res = analyze(ctx, file, length, lo, hi);
-                java.util.List<JSONObject> best = ru.tiktokclipper.core.Template.best(res.optJSONArray("candidates"), per, Math.max(90, 3.0 * length));
+                // ключи Twitch есть и запись с той же датой нашлась — моменты, которые нарезали сами зрители
+                JSONArray tw = null;
+                try {
+                    tw = api.discover.momentsForFile(src, file, newest.optString("name"), newest.optDouble("mtime"));
+                } catch (ApiError err) {
+                    ctx.warn("Twitch: " + err.getMessage() + " Ищу моменты по чату/звуку.");
+                }
+                JSONArray cands;
+                if (tw != null) {
+                    cands = new JSONArray();
+                    for (int i = 0; i < tw.length(); i++) {
+                        JSONObject mm = tw.getJSONObject(i);
+                        double st0 = Math.max(0, mm.getDouble("t") - 3);
+                        cands.put(new JSONObject().put("start", st0).put("end", Math.min(st0 + 180, Math.max(st0 + length, mm.optDouble("end") + 2))));
+                    }
+                    ctx.progress(hi, "Моменты из клипов зрителей Twitch: " + src.optString("title"));
+                } else {
+                    cands = analyze(ctx, file, length, lo, hi).optJSONArray("candidates");
+                }
+                java.util.List<JSONObject> best = ru.tiktokclipper.core.Template.best(cands, per, Math.max(90, 3.0 * length));
                 boolean srt = e.platform.sidecarSrt(file) != null;
                 for (JSONObject c : best) {
                     JSONObject cp = ru.tiktokclipper.core.Template.clipParams(tpl, file, c.getDouble("start"), c.getDouble("end"), srt)

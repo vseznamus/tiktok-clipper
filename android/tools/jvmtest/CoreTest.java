@@ -375,6 +375,86 @@ public class CoreTest {
             check(Captions.stream("", null, "x.mp4").startsWith("Стрим\n"), "без имени");
         });
 
+        test("Twitch: клипы зрителей → моменты в записях эфиров, новый ключ доступа при 401", () -> {
+            Store store = new Store(Files.createTempDirectory("tw").toFile());
+            store.saveSettings(new JSONObject().put("twitch_client_id", "cid").put("twitch_client_secret", "sec"));
+            store.upsertSource(new JSONObject().put("type", "stream").put("title", "Стример").put("twitch_login", "https://www.twitch.tv/Streamer_1"));
+            final int[] tokens = {0}, users = {0};
+            Discover d = new Discover(store, (url, h, body) -> {
+                if (url.startsWith("https://id.twitch.tv/oauth2/token")) {
+                    check(body.contains("client_id=cid") && body.contains("grant_type=client_credentials"), body);
+                    tokens[0]++;
+                    return new Discover.Resp(200, "{\"access_token\":\"T" + tokens[0] + "\",\"expires_in\":3600}");
+                }
+                check("cid".equals(h.get("Client-Id")), "Client-Id");
+                if (url.contains("/users?login=streamer_1")) {
+                    if (users[0]++ == 0) return new Discover.Resp(401, "{}"); // ключ доступа устарел
+                    check(h.get("Authorization").equals("Bearer T2"), h.get("Authorization"));
+                    return new Discover.Resp(200, "{\"data\":[{\"id\":\"42\",\"display_name\":\"Streamer_1\"}]}");
+                }
+                if (url.contains("/videos?user_id=42")) return new Discover.Resp(200, "{\"data\":["
+                        + "{\"id\":\"v1\",\"title\":\"Эфир 1\",\"created_at\":\"2026-10-30T18:00:00Z\",\"duration\":\"3h0m0s\",\"url\":\"u1\",\"view_count\":10},"
+                        + "{\"id\":\"v2\",\"title\":\"Эфир 2\",\"created_at\":\"2026-10-28T18:00:00Z\",\"duration\":\"1h2m3s\",\"url\":\"u2\",\"view_count\":5}]}");
+                if (url.contains("/clips?broadcaster_id=42")) {
+                    check(url.contains("started_at=2026-10-28T18"), url);
+                    return new Discover.Resp(200, "{\"data\":["
+                            + "{\"video_id\":\"v1\",\"vod_offset\":100,\"duration\":30,\"view_count\":500,\"title\":\"ахах\",\"url\":\"c1\"},"
+                            + "{\"video_id\":\"v1\",\"vod_offset\":120,\"duration\":40,\"view_count\":100,\"title\":\"b\",\"url\":\"c2\"},"
+                            + "{\"video_id\":\"v1\",\"vod_offset\":3000,\"duration\":20,\"view_count\":2000,\"title\":\"гол\",\"url\":\"c3\"},"
+                            + "{\"video_id\":\"v1\",\"vod_offset\":null,\"duration\":20,\"view_count\":9,\"title\":\"x\",\"url\":\"c4\"},"
+                            + "{\"video_id\":\"\",\"vod_offset\":null,\"duration\":20,\"view_count\":9,\"title\":\"y\",\"url\":\"c5\"}"
+                            + "],\"pagination\":{}}");
+                }
+                throw new IOException("неожиданный адрес " + url);
+            });
+            JSONObject r = d.twitch(false);
+            check(r.getBoolean("configured") && r.getBoolean("has_sources"), r.toString());
+            JSONObject st = r.getJSONArray("streamers").getJSONObject(0);
+            check(st.getBoolean("ok") && st.getString("login").equals("streamer_1"), st.toString());
+            JSONArray vods = st.getJSONArray("vods");
+            JSONObject v1 = vods.getJSONObject(0);
+            check(v1.getDouble("duration") == 10800 && vods.getJSONObject(1).getDouble("duration") == 3723, "длительность");
+            JSONArray ms = v1.getJSONArray("moments");
+            check(ms.length() == 2, ms.toString());
+            check(ms.getJSONObject(0).getDouble("t") == 3000 && ms.getJSONObject(0).getString("title").equals("гол"), "лучший момент первым");
+            JSONObject m2 = ms.getJSONObject(1);
+            check(m2.getDouble("t") == 100 && m2.getInt("clips") == 2 && m2.getLong("views") == 600 && m2.getDouble("end") == 160
+                    && m2.getString("title").equals("ахах"), m2.toString());
+            check(st.getInt("clips_without_vod") == 2, "клипы без записи");
+            check(vods.getJSONObject(1).getJSONArray("moments").length() == 0, "во второй записи моментов нет");
+            // привязка файла к записи запоминается; кэш не ходит в сеть повторно
+            d.link("tw:v1", "src/efir.mp4");
+            JSONObject again = d.twitch(false);
+            check(again.getJSONArray("streamers").getJSONObject(0).getJSONArray("vods").getJSONObject(0).getString("file").equals("src/efir.mp4"), "файл");
+            check(users[0] == 2 && tokens[0] == 2, "кэш: " + users[0] + " " + tokens[0]);
+        });
+        test("Twitch: без ключей — подсказка, неверные ключи — понятная ошибка", () -> {
+            Store store = new Store(Files.createTempDirectory("tw2").toFile());
+            store.upsertSource(new JSONObject().put("type", "stream").put("title", "S").put("twitch_login", "s"));
+            Discover d = new Discover(store, (url, h, body) -> new Discover.Resp(400, "{\"message\":\"invalid client\"}"));
+            check(!d.twitch(false).getBoolean("configured"), "без ключей");
+            store.saveSettings(new JSONObject().put("twitch_client_id", "a").put("twitch_client_secret", "b"));
+            JSONObject st = d.twitch(true).getJSONArray("streamers").getJSONObject(0);
+            check(!st.getBoolean("ok") && st.getString("error").contains("не принял ключи"), st.toString());
+        });
+        test("Twitch: моменты для файла записи по дате эфира (для ночной нарезки)", () -> {
+            Store store = new Store(Files.createTempDirectory("twf").toFile());
+            JSONObject src = new JSONObject().put("id", "v").put("type", "stream").put("title", "Вася").put("twitch_login", "vasya");
+            Discover d = new Discover(store, (url, h, body) -> {
+                if (url.startsWith("https://id.twitch.tv")) return new Discover.Resp(200, "{\"access_token\":\"T\",\"expires_in\":3600}");
+                if (url.contains("/users?")) return new Discover.Resp(200, "{\"data\":[{\"id\":\"1\",\"display_name\":\"Vasya\"}]}");
+                if (url.contains("/videos?")) return new Discover.Resp(200, "{\"data\":[{\"id\":\"77\",\"title\":\"Эфир\",\"created_at\":\"2026-10-28T12:00:00Z\",\"duration\":\"2h0m0s\"}]}");
+                if (url.contains("/clips?")) return new Discover.Resp(200, "{\"data\":[{\"video_id\":\"77\",\"vod_offset\":600,\"duration\":30,\"view_count\":900,\"title\":\"гол\",\"url\":\"c\"}]}");
+                throw new IOException(url);
+            });
+            check(d.momentsForFile(src, "v/stream_2026-10-28.mp4", "stream_2026-10-28.mp4", 0) == null, "без ключей — null");
+            store.saveSettings(new JSONObject().put("twitch_client_id", "a").put("twitch_client_secret", "b"));
+            JSONArray m = d.momentsForFile(src, "v/stream_2026-10-28.mp4", "stream_2026-10-28.mp4", 0);
+            check(m != null && m.getJSONObject(0).getDouble("t") == 600, "по дате в имени: " + m);
+            check(d.momentsForFile(src, "v/stream_2026-10-27.mp4", "stream_2026-10-27.mp4", 0) == null, "другая дата — нет");
+            d.link("tw:77", "v/запись без даты.mp4");
+            check(d.momentsForFile(src, "v/запись без даты.mp4", "запись без даты.mp4", 0) != null, "по привязке файла");
+        });
         // ---------------------------------------------------------------- серии, оценка сцен
         test("серия из имени файла: S01E05, 1x05, «2 сезон 3 серия», «серия 7»", () -> {
             check(Arrays.equals(Captions.episodeOf("Breaking.Bad.S01E05.1080p.mkv"), new int[]{1, 5}), "S01E05");

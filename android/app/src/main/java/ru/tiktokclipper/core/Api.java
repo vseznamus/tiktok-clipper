@@ -20,7 +20,7 @@ import java.util.Locale;
  * другие приложения на телефоне не смогут управлять нарезкой.
  */
 public class Api implements MiniHttp.Handler {
-    public static final String VERSION = "3.0.2-android";
+    public static final String VERSION = "3.1.0-android";
     public static final String COOKIE = "clipper_k";
 
     private final Store store;
@@ -30,14 +30,23 @@ public class Api implements MiniHttp.Handler {
     public volatile LocalDate fixedToday; // для тестов
 
     public Api(Store store, Platform platform, JobQueue queue, String token) {
+        this(store, platform, queue, token, null);
+    }
+
+    /** http — запросы к Twitch (null — настоящие; в тестах — имитация). */
+    public Api(Store store, Platform platform, JobQueue queue, String token, Discover.Http http) {
         this.store = store;
         this.platform = platform;
         this.queue = queue;
         this.token = token;
+        this.discover = new Discover(store, http);
     }
 
+    /** Twitch по ключам: записи эфиров и клипы зрителей. */
+    public final Discover discover;
+
     /** Ключи сервисов не отдаются в интерфейс целиком — только последние 4 символа. */
-    static final String[] SECRET_KEYS = {};
+    static final String[] SECRET_KEYS = {"twitch_client_id", "twitch_client_secret"};
 
     static JSONObject maskSecrets(JSONObject s) throws JSONException {
         for (String k : SECRET_KEYS) {
@@ -173,6 +182,17 @@ public class Api implements MiniHttp.Handler {
             case "upload":
                 throw new ApiError(400, "В приложении видео выбирается кнопкой «Выбрать видео на телефоне».");
             case "today": return todayView();
+            case "discover": {
+                boolean refresh = "1".equals(r.q("refresh", ""));
+                String what = seg.length > 1 ? seg[1] : "";
+                if (what.equals("twitch") && m.equals("GET")) return MiniHttp.Response.json(discover.twitch(refresh));
+                if (what.equals("link") && m.equals("POST")) {
+                    JSONObject b = r.json();
+                    discover.link(b.optString("key"), b.optString("file"));
+                    return ok();
+                }
+                break;
+            }
             case "night": {
                 java.io.File nf = new java.io.File(store.dir, "night.json");
                 if (seg.length == 1 && m.equals("GET")) {
@@ -331,6 +351,14 @@ public class Api implements MiniHttp.Handler {
                 case "bitrate_mbps":
                     patch.put(k, Math.min(30, Math.max(2, b.optInt(k, 10))));
                     break;
+                case "twitch_client_id":
+                case "twitch_client_secret": {
+                    String v = b.optString(k, "").trim();
+                    if (v.length() > 100 || !v.matches("[A-Za-z0-9]*")) throw new ApiError(400, "Ключ содержит лишние символы — скопируйте его заново");
+                    patch.put(k, v);
+                    discover.clearCache();
+                    break;
+                }
                 case "template":
                     patch.put(k, Template.clean(b.optJSONObject(k)));
                     break;

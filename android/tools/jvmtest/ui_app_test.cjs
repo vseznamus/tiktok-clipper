@@ -170,6 +170,30 @@ async function check(page, name, full = false) {
     await check(page, "a08_gotovye_klipy", true);
     step("ночная нарезка: самая свежая запись стримера → клипы с пометкой 🌙 в «Готовых клипах»");
 
+    // ключи Twitch → «Эфиры и клипы зрителей» → «Резать» → запись из папки стримера
+    await page.click('#nav a[data-tab="settings"]');
+    await page.waitForSelector("#bTwKeys");
+    await page.fill("#kTwId", "abc123clientid");
+    await page.fill("#kTwSec", "secretsecret999");
+    await page.click("#bTwKeys");
+    await page.waitForFunction(() => (document.querySelector("#kTwSec") || {}).placeholder?.includes("…t999"));
+    if ((await page.content()).includes("secretsecret999")) fail("ключ показан целиком");
+    step("ключи Twitch сохранены, в интерфейсе видны только последние символы");
+    await page.click('#nav a[data-tab="streamers"]');
+    await page.click("text=Эфиры и клипы зрителей");
+    await page.waitForSelector(".mom");
+    const tw = await page.innerText("#twBox");
+    if (!tw.includes("Вася испугался скримера") || !tw.includes("клипов: 2")) fail("клипы зрителей: " + tw.slice(0, 300));
+    await noJunk("«Эфиры и клипы»");
+    await check(page, "a09_efiry_klipy", true);
+    await page.click('[data-cut="0:0:0"]');
+    await page.waitForSelector(".sheet");
+    if (!(await page.innerText(".sheet")).includes("похоже, это она")) fail("запись с датой эфира не подсказана");
+    await page.click(".sheet [data-i='0']");
+    await page.waitForSelector("#pv");
+    if ((await page.inputValue("#tStart")) !== "0:09.0") fail("момент клипа зрителей не с той секунды: " + (await page.inputValue("#tStart")));
+    step("«Эфиры и клипы зрителей» (Twitch по ключам) → «Резать» → запись эфира по дате → клип открыт с 0:09");
+
     // видео с телефона
     await page.selectOption("#srcSel", "");
     await page.waitForSelector("#pickV");
