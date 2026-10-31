@@ -20,7 +20,7 @@ import java.util.Locale;
  * другие приложения на телефоне не смогут управлять нарезкой.
  */
 public class Api implements MiniHttp.Handler {
-    public static final String VERSION = "1.6.0-android";
+    public static final String VERSION = "2.0.0-android";
     public static final String COOKIE = "clipper_k";
 
     private final Store store;
@@ -39,6 +39,27 @@ public class Api implements MiniHttp.Handler {
         this.queue = queue;
         this.token = token;
         this.tmdb = new Tmdb(store, http);
+        this.imdb = new ImdbRatings(store);
+        this.tmdb.imdb = imdb;
+    }
+
+    public final ImdbRatings imdb;
+
+    /** Рейтинги IMDb старше недели или не скачаны — ставим загрузку в очередь (если её там ещё нет). */
+    private boolean ensureImdb() throws ApiError {
+        long age = imdb.ageDays();
+        if (age >= 0 && age < 7) return false;
+        JSONArray jobs = queue.list();
+        for (int i = 0; i < jobs.length(); i++) {
+            JSONObject j = jobs.optJSONObject(i);
+            if (j != null && "imdb".equals(j.optString("type")) && ("queued".equals(j.optString("status")) || "running".equals(j.optString("status")))) return true;
+        }
+        try {
+            queue.submit("imdb", new JSONObject(), "Загрузка рейтингов IMDb");
+            return true;
+        } catch (ApiError e) {
+            return false; // обработчика нет (например, в тестах) — без IMDb
+        }
     }
 
     public final Tmdb tmdb;
@@ -184,6 +205,12 @@ public class Api implements MiniHttp.Handler {
                 boolean refresh = "1".equals(r.q("refresh", ""));
                 String what = seg.length > 1 ? seg[1] : "";
                 if (what.equals("lists") && m.equals("GET")) return MiniHttp.Response.json(tmdb.lists(refresh));
+                if (what.equals("pick") && m.equals("GET")) {
+                    boolean loading = ensureImdb();
+                    JSONObject res = tmdb.pick(r.q("region", "world"), r.q("type", "tv"), r.q("kind", "popular"),
+                            Integer.parseInt(r.q("page", "1")), refresh);
+                    return MiniHttp.Response.json(res.put("imdb_loading", loading && !imdb.loaded()));
+                }
                 if (what.equals("ru") && m.equals("GET")) {
                     return MiniHttp.Response.json(tmdb.russian(r.q("type", "tv"), r.q("kind", "popular"), Integer.parseInt(r.q("page", "1")), refresh));
                 }

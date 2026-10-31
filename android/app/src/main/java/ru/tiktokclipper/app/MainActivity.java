@@ -24,7 +24,7 @@ import org.json.JSONObject;
 
 /** Главный экран: тот же интерфейс, что у веб-версии, внутри WebView + мост к системным окнам Android. */
 public class MainActivity extends Activity {
-    private static final int REQ_FOLDER = 1, REQ_VIDEO = 2;
+    private static final int REQ_FOLDER = 1, REQ_VIDEO = 2, REQ_IMAGE = 3;
     private WebView web;
     private Engine engine;
 
@@ -112,6 +112,9 @@ public class MainActivity extends Activity {
             } else if (req == REQ_VIDEO) {
                 String id = engine.platform.registerPicked(uri);
                 js("window.onVideoPicked && window.onVideoPicked(" + JSONObject.quote(id) + ")");
+            } else if (req == REQ_IMAGE) {
+                String id = engine.platform.registerImage(uri);
+                js("window.onImagePicked && window.onImagePicked(" + JSONObject.quote(id) + ")");
             }
         } catch (Exception e) {
             Toast.makeText(this, "Не получилось: " + e.getMessage(), Toast.LENGTH_LONG).show();
@@ -152,6 +155,17 @@ public class MainActivity extends Activity {
                 i.setType("video/*");
                 i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
                 startActivityForResult(i, REQ_VIDEO);
+            });
+        }
+
+        @JavascriptInterface
+        public void pickImage() {
+            runOnUiThread(() -> {
+                Intent i = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+                i.addCategory(Intent.CATEGORY_OPENABLE);
+                i.setType("image/*");
+                i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
+                startActivityForResult(i, REQ_IMAGE);
             });
         }
 

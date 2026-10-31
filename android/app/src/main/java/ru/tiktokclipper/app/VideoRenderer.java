@@ -190,6 +190,16 @@ final class VideoRenderer {
     private final FloatBuffer quad = ByteBuffer.allocateDirect(16 * 4).order(ByteOrder.nativeOrder()).asFloatBuffer();
     private int subTex = -1;
     private Subs.Event subEvent;
+    private Bitmap banner;
+    private int[] bannerRect;
+    private int bannerTex = -1;
+
+    /** Баннер-картинка поверх видео (под субтитрами, без зеркала). rect — {x, y, w, h} в кадре 1080×1920. */
+    VideoRenderer banner(Bitmap b, int[] rect) {
+        banner = b;
+        bannerRect = rect;
+        return this;
+    }
     private int subTop, subH;
 
     static final class Result {
@@ -528,7 +538,22 @@ final class VideoRenderer {
         GLES20.glViewport(0, 0, W, H);
         draw2d(fboTex[0], 0, 0, W, H, W, H, 0, 1, 1, 0, mirror, 0.88f, 0, 0);
         for (Draw d : plan.parts) drawVideo(d, W, H, mirror, 1f);
-        // 3) субтитры поверх — без зеркала
+        // 3) баннер — без зеркала
+        if (banner != null) {
+            if (bannerTex < 0) {
+                int[] tx = new int[1];
+                GLES20.glGenTextures(1, tx, 0);
+                bannerTex = tx[0];
+                GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, bannerTex);
+                setTexParams();
+                GLUtils.texImage2D(GLES20.GL_TEXTURE_2D, 0, banner, 0);
+            }
+            GLES20.glEnable(GLES20.GL_BLEND);
+            GLES20.glBlendFunc(GLES20.GL_ONE, GLES20.GL_ONE_MINUS_SRC_ALPHA);
+            draw2d(bannerTex, bannerRect[0], bannerRect[1], bannerRect[2], bannerRect[3], W, H, 0, 0, 1, 1, false, 1f, 0, 0);
+            GLES20.glDisable(GLES20.GL_BLEND);
+        }
+        // 4) субтитры поверх — без зеркала
         Subs.Event ev = null;
         for (Subs.Event e : events) {
             if (t >= e.t0 && t < e.t1) {

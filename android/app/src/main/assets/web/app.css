@@ -147,3 +147,8 @@ details.card > summary { cursor: pointer; min-height: 32px; display: flex; align
 /* «Русское» */
 .ruitem { display: flex; flex-direction: column; gap: 6px; padding: 12px; border-radius: 12px; background: var(--card2); margin-top: 8px; }
 .ruitem .row .btn { width: auto; flex: 1; }
+
+/* баннер: предпросмотр кадра 9:16 */
+.bnPrev { position: relative; width: 60%; margin: 0 auto; aspect-ratio: 9 / 16; background: #000; border-radius: 12px; overflow: hidden; }
+.bnPrev .bnFrame { position: absolute; left: 0; top: 50%; width: 100%; transform: translateY(-50%); }
+.bnPrev .bnImg { position: absolute; object-fit: fill; }

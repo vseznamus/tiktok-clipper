@@ -393,6 +393,61 @@ public class CoreTest {
             t.russian("tv", "popular", 1, false);
             check(urls.size() == 3, "кэш списка");
         });
+        test("IMDb: разбор title.ratings.tsv.gz, порог голосов, поиск по tt", () -> {
+            Store store = new Store(Files.createTempDirectory("imdb").toFile());
+            ImdbRatings im = new ImdbRatings(store);
+            check(!im.loaded() && im.ageDays() == -1 && im.get("tt0903747") == null, "пусто");
+            StringBuilder tsv = new StringBuilder("tconst\taverageRating\tnumVotes\n");
+            for (int i = 1; i <= 2000; i++) tsv.append(String.format(Locale.ROOT, "tt%07d\t%.1f\t%d\n", i, 5 + (i % 50) / 10.0, i * 3));
+            tsv.append("tt0903747\t9.5\t2300000\nмусор\nttX\t1\t1\n");
+            ByteArrayOutputStream bo = new ByteArrayOutputStream();
+            try (java.util.zip.GZIPOutputStream gz = new java.util.zip.GZIPOutputStream(bo)) { gz.write(tsv.toString().getBytes(StandardCharsets.UTF_8)); }
+            int n = im.update(new ByteArrayInputStream(bo.toByteArray()), null, null);
+            check(n == 2000 - 166 + 1, "оставлено " + n); // голосов ≥ 500: id ≥ 167
+            double[] bb = im.get("tt0903747");
+            check(bb != null && bb[0] == 9.5 && bb[1] == 2300000, "рейтинг");
+            check(im.get("tt0000100") == null, "мало голосов — не хранится");
+            check(new ImdbRatings(store).get("tt0001000") != null && new ImdbRatings(store).ageDays() == 0, "с диска");
+            try {
+                im.update(new ByteArrayInputStream("не gzip".getBytes(StandardCharsets.UTF_8)), null, null);
+                check(false, "не gzip должен отклоняться");
+            } catch (java.util.zip.ZipException e) {
+                check(im.get("tt0903747") != null, "старые данные целы");
+            }
+        });
+        test("Подборка: мир — тренды и лучшие, Россия — язык ru; «Лучшее» сортируется по IMDb", () -> {
+            Store store = new Store(Files.createTempDirectory("pick").toFile());
+            store.saveSettings(new JSONObject().put("tmdb_key", "k123"));
+            ImdbRatings im = new ImdbRatings(store);
+            String tsv = "tconst\taverageRating\tnumVotes\ntt0000001\t9.1\t9000\ntt0000002\t7.0\t9000\n";
+            ByteArrayOutputStream bo = new ByteArrayOutputStream();
+            try (java.util.zip.GZIPOutputStream gz = new java.util.zip.GZIPOutputStream(bo)) { gz.write(tsv.getBytes(StandardCharsets.UTF_8)); }
+            im.update(new ByteArrayInputStream(bo.toByteArray()), null, null);
+            final List<String> urls = new ArrayList<>();
+            Tmdb t = new Tmdb(store, (url, h, b) -> {
+                urls.add(url);
+                if (url.contains("/external_ids")) {
+                    String id = url.contains("/tv/1/") ? "tt0000002" : url.contains("/tv/2/") ? "tt0000001" : "";
+                    return new Net.Resp(200, "{\"imdb_id\":" + (id.isEmpty() ? "null" : "\"" + id + "\"") + "}");
+                }
+                return new Net.Resp(200, "{\"page\":1,\"total_pages\":40,\"results\":[{\"id\":1,\"name\":\"Первый\",\"vote_average\":9.0},"
+                        + "{\"id\":2,\"name\":\"Второй\",\"vote_average\":8.0},{\"id\":3,\"name\":\"Третий\",\"vote_average\":8.5}]}");
+            });
+            t.imdb = im;
+            JSONObject best = t.pick("world", "tv", "best", 1, false);
+            JSONArray it = best.getJSONArray("items");
+            check(urls.get(0).contains("/tv/top_rated?"), urls.get(0));
+            check(it.getJSONObject(0).getString("title").equals("Второй") && it.getJSONObject(0).getDouble("imdb_rating") == 9.1, "по IMDb: " + it);
+            check(it.getJSONObject(1).getString("title").equals("Первый") && it.getJSONObject(2).getString("title").equals("Третий") && !it.getJSONObject(2).has("imdb_id"), it.toString());
+            check(best.getInt("total_pages") == 20 && best.getBoolean("imdb_loaded"), "страницы ограничены 20");
+            int before = urls.size();
+            t.pick("world", "tv", "popular", 1, false);
+            check(urls.get(before).contains("/trending/tv/week?"), urls.get(before));
+            check(urls.size() == before + 1, "imdb_id берутся из кэша на телефоне, без повторных запросов");
+            t.pick("ru", "movie", "popular", 2, false);
+            String ru = urls.get(urls.size() - 4);
+            check(ru.contains("discover/movie?") && ru.contains("with_original_language=ru") && ru.contains("page=2"), ru);
+        });
         test("оценка сцен: эмоции в репликах поднимают момент при ровном звуке", () -> {
             double[] lv = new double[1200];
             Arrays.fill(lv, -30);

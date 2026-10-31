@@ -70,11 +70,11 @@ async function pollJob(id, onUpdate) {
 function bar(frac) { return `<div class="progress"><i style="width:${Math.round((frac || 0) * 100)}%"></i></div>`; }
 
 // ------------------------------------------------------------------ роутер
-const routes = { today: viewToday, discover: viewDiscover, ru: viewRu, clip: viewClip, cam: viewCam, queue: viewQueue, clips: viewClips,
+const routes = { pick: viewPick, today: viewToday, discover: viewDiscover, ru: viewRu, clip: viewClip, cam: viewCam, queue: viewQueue, clips: viewClips,
   clipview: viewClipView, settings: viewSettings, source: viewSource };
 
 function parseHash() {
-  const h = location.hash.replace(/^#\/?/, "") || "today";
+  const h = location.hash.replace(/^#\/?/, "") || (APP ? "pick" : "today");
   const [path, qs] = h.split("?");
   const [name, ...rest] = path.split("/");
   return { name, arg: rest.join("/") ? decodeURIComponent(rest.join("/")) : "", q: new URLSearchParams(qs || "") };
@@ -83,8 +83,10 @@ async function route() {
   S.timers.forEach(clearInterval); S.timers = [];
   S.seq = (S.seq || 0) + 1;
   const r = parseHash();
-  const fn = routes[r.name] || viewToday;
-  const tab = { cam: "clip", clipview: "clips", source: "settings" }[r.name] || r.name;
+  // в приложении только «Подборка», «Клип», «Настройки»; старые адреса ведут туда
+  if (APP && { today: 1, discover: 1, ru: 1, queue: 1, clips: 1, source: 1, cam: 1 }[r.name]) { location.replace(r.name === "ru" || r.name === "discover" ? "#/pick" : "#/clip"); return; }
+  const fn = routes[r.name] || (APP ? viewPick : viewToday);
+  const tab = { cam: "clip", clipview: APP ? "clip" : "clips", source: "settings" }[r.name] || r.name;
   $$("#nav a").forEach((a) => a.classList.toggle("on", a.dataset.tab === tab));
   try { await fn(r.arg, r.q); } catch (e) { if (e.message !== "auth") app.innerHTML += `<p class="err pad">${esc(e.message)}</p>`; }
   window.scrollTo(0, 0);
@@ -204,14 +206,19 @@ async function viewClip(_arg, q) {
     history.replaceState(null, "", "#/clip");
   }
   if (dr.source_id === undefined) dr.source_id = S.cfg.sources[0] ? S.cfg.sources[0].id : "";
+  if (APP) { dr.source_id = ""; if (dr.file && !dr.file.startsWith("_picked/")) dr.file = null; } // в приложении — видео с телефона
   saveDraft();
   const opts = S.cfg.sources.map((s) => `<option value="${esc(s.id)}" ${s.id === dr.source_id ? "selected" : ""}>${esc(s.title)} (${esc(typeName(s.type))})</option>`).join("");
-  app.innerHTML = `<h1>Выбор момента</h1>
+  app.innerHTML = APP ? `<h1>Клип</h1><div id="jobsBox"></div>
+  <div class="card"><h2>Видео</h2><div id="fileBox"></div></div>
+  <div id="momentBox"></div><div id="readyBox"></div>`
+    : `<h1>Выбор момента</h1>
   <div class="card"><label class="f" for="srcSel">Источник</label>
-    <select id="srcSel">${opts}<option value="" ${dr.source_id ? "" : "selected"}>${APP ? "Выбранные видео" : "Загруженные с телефона"}</option></select>
+    <select id="srcSel">${opts}<option value="" ${dr.source_id ? "" : "selected"}>Загруженные с телефона</option></select>
     <div id="fileBox"></div></div>
   <div id="momentBox"></div>`;
-  $("#srcSel").onchange = (e) => { dr.source_id = e.target.value; dr.file = null; saveDraft(); viewClip("", new URLSearchParams()); };
+  if ($("#srcSel")) $("#srcSel").onchange = (e) => { dr.source_id = e.target.value; dr.file = null; saveDraft(); viewClip("", new URLSearchParams()); };
+  if (APP) { appJobs(); every(appJobs, 3000); appReady(); }
   await renderFiles();
   if (dr.file) await renderMoment();
 
@@ -309,7 +316,8 @@ async function viewClip(_arg, q) {
       <p class="big" id="durTxt"></p>
       <button class="btn" id="playSeg">▶ Проиграть отрезок</button>
     </div>
-    <div class="card stack"><button class="btn" id="bMom">Предложить моменты</button>
+    <div class="card stack"><button class="btn" id="bMom">${APP ? "Автоподбор моментов" : "Предложить моменты"}</button>
+      ${APP ? `<p class="muted small">Найду самые яркие места: громкие всплески, плотная и эмоциональная речь, быстрый монтаж.</p>` : ""}
       <div id="momRes"></div></div>
     <div class="card">
       <h2>Настройки клипа</h2>
@@ -325,6 +333,7 @@ async function viewClip(_arg, q) {
         <option value="split" ${dr.layout === "split" ? "selected" : ""}>Экран сверху + вебкамера снизу</option></select>
       <div id="camInfo" class="stack" style="margin-top:10px"></div>`}
     </div>
+    ${APP ? bannerCard(dr) : ""}
     <button class="btn primary" id="bMake">Сделать клип</button>`;
 
     const v = $("#pv"), img = $("#pimg");
@@ -417,9 +426,12 @@ async function viewClip(_arg, q) {
     $("#bMake").onclick = async () => {
       const params = { source_id: dr.source_id || null, file: dr.file, start: dr.start, end: dr.end, mirror: dr.mirror,
         subtitles: dr.subtitles, language: dr.language, sub_style: dr.sub_style, layout: dr.layout, sub_source: dr.use_srt ? "srt" : "asr" };
-      await api("/api/jobs", { method: "POST", body: { type: "clip", params } });
-      toast("Клип добавлен в очередь"); refreshBadge(); go("#/queue");
+      if (APP && dr.banner) Object.assign(params, { banner: dr.banner.path, banner_pos: dr.banner.pos, banner_size: dr.banner.size });
+      const job = await api("/api/jobs", { method: "POST", body: { type: "clip", params } });
+      if (!APP) { toast("Клип добавлен в очередь"); refreshBadge(); go("#/queue"); return; }
+      S.watchJob = job.id; toast("Собираю клип — прогресс вверху экрана"); appJobs(); window.scrollTo(0, 0);
     };
+    if (APP) bindBanner(dr);
   }
 }
 
@@ -712,7 +724,7 @@ async function viewSettings() {
   const asr = st.asr;
   const ff = st.ffmpeg;
   app.innerHTML = `<h1>Настройки</h1>
-  <div class="card"><h2>Источники</h2>
+  ${APP ? "" : `<div class="card"><h2>Источники</h2>
     ${S.cfg.sources.length ? `<ul class="list">${S.cfg.sources.map((s) => `<li><a class="item" href="#/source/${encodeURIComponent(s.id)}">
       <span class="badge ${s.type}">${esc(typeName(s.type))}</span><span class="t"><b>${esc(s.title)}</b>${s.enabled === false ? " (выключен)" : ""}<br>
       <span class="muted small">папка: ${esc(s.folder)}${APP ? "" : ` · ${s.full_profile.layout === "split" ? "экран + вебкамера" : "один кадр"}`}</span></span><span class="chev">›</span></a></li>`).join("")}</ul>`
@@ -724,7 +736,7 @@ async function viewSettings() {
     <div class="grid2"><div><label class="f" for="sInt">Интервал, дней</label><input type="number" id="sInt" min="1" max="30" value="${sc.interval_days}"></div>
       <div><label class="f" for="sPpb">Постов в блоке</label><input type="number" id="sPpb" min="1" max="20" value="${sc.posts_per_block}"></div></div>
     <label class="f">Порядок типов</label><ul class="list" id="order"></ul>
-    <button class="btn primary" id="bSched">Сохранить расписание</button></div>
+    <button class="btn primary" id="bSched">Сохранить расписание</button></div>`}
 
   ${APP ? keysCard(se) : ""}
   ${APP ? appAsrCard(st, se) : `  <div class="card"><h2>Распознавание речи</h2>
@@ -745,12 +757,13 @@ async function viewSettings() {
     ${st.checks ? st.checks.map((c) => `<p class="small">${esc(c.name)}: ${c.ok ? '<span class="ok">есть</span>' : '<span class="err">нет</span>'}</p>`).join("")
       : `<p class="small">ffmpeg: ${ff.ffmpeg ? '<span class="ok">есть</span>' : '<span class="err">нет</span>'} · libass: ${ff.libass ? '<span class="ok">есть</span>' : '<span class="err">нет</span>'} · H.264: ${ff.libx264 ? '<span class="ok">есть</span>' : '<span class="err">нет</span>'}</p>
     ${ff.problems.map((p) => `<p class="err">${esc(p)}</p>`).join("")}`}
-    <p class="small wrap">Папка с видео: ${esc(st.media_root)}</p>
+    ${APP ? "" : `<p class="small wrap">Папка с видео: ${esc(st.media_root)}</p>`}
     <p class="small wrap">Готовые клипы: ${esc(st.output_dir)}</p>
-    <p class="small">Автопоиск лица (OpenCV): ${st.opencv ? "есть" : "нет"} · ${st.termux ? "Android/Termux" : "компьютер/сервер"} · версия ${esc(st.version)}</p>
+    <p class="small">${APP ? "" : `Автопоиск лица (OpenCV): ${st.opencv ? "есть" : "нет"} · ${st.termux ? "Android/Termux" : "компьютер/сервер"} · `}версия ${esc(st.version)}</p>
     ${st.auth ? `<button class="btn ghost" id="bOut">Выйти</button>` : ""}</div>`;
 
   const drawOrder = () => {
+    if (!$("#order")) return;
     $("#order").innerHTML = order.map((t, i) => `<li><div class="item"><span class="t">${i + 1}. ${esc(typeName(t))}</span>
       <button class="btn sm" style="width:56px" data-up="${i}" ${i ? "" : "disabled"} aria-label="Выше">↑</button>
       <button class="btn sm" style="width:56px" data-down="${i}" ${i < order.length - 1 ? "" : "disabled"} aria-label="Ниже">↓</button></div></li>`).join("");
@@ -758,7 +771,7 @@ async function viewSettings() {
     $$("[data-down]").forEach((b) => (b.onclick = () => { const i = +b.dataset.down; [order[i + 1], order[i]] = [order[i], order[i + 1]]; drawOrder(); }));
   };
   drawOrder();
-  $("#bSched").onclick = async () => {
+  if ($("#bSched")) $("#bSched").onclick = async () => {
     await api("/api/schedule", { method: "PUT", body: { start_date: $("#sDate").value || null, interval_days: +$("#sInt").value, posts_per_block: +$("#sPpb").value, type_order: order } });
     toast("Расписание сохранено");
   };
@@ -808,8 +821,8 @@ function keysCard(se) {
     <input id="${id}" autocomplete="off" autocapitalize="off" spellcheck="false"
       placeholder="${se[k + "_set"] ? `сохранён (${esc(se[k + "_hint"])}) — вставьте новый, чтобы заменить` : "не задан"}">`;
   return `<div class="card"><h2>Ключ TMDB</h2>
-    <p class="muted small">Бесплатный. Нужен для рейтинга серий и подборок во вкладке «Моменты». Хранится только на этом телефоне.
-      Как получить — в инструкции, раздел «Моменты».</p>
+    <p class="muted small">Бесплатный. Нужен для вкладки «Подборка». Хранится только на этом телефоне.
+      Как получить — в инструкции, раздел «Подборка».</p>
     ${f("kTm", "tmdb_key", "Ключ API или токен доступа")}
     <p class="muted small"><a href="https://www.themoviedb.org/settings/api" target="_blank" rel="noopener">themoviedb.org/settings/api</a></p>
     <div style="height:12px"></div><button class="btn primary" id="bKeys">Сохранить ключ</button>
@@ -1003,6 +1016,131 @@ async function viewRu(_arg, q) {
   load(!!(q && q.get && q.get("refresh") === "1"));
 }
 
+// ------------------------------------------------------------------ «Клип» в приложении: сборка, готовые клипы, баннер
+async function appJobs() {
+  const box = $("#jobsBox");
+  if (!box) return;
+  const jobs = await api("/api/jobs").catch(() => []);
+  if (!box.isConnected) return;
+  const act = jobs.filter((j) => (j.type === "clip" || j.type === "rebuild") && (j.status === "queued" || j.status === "running"));
+  const done = S.watchJob ? jobs.find((j) => j.id === S.watchJob && (j.status === "done" || j.status === "error" || j.status === "canceled")) : null;
+  if (done) {
+    S.watchJob = null;
+    if (done.status === "done" && done.result && done.result.clip_id) { toast("Клип готов"); go(`#/clipview/${encodeURIComponent(done.result.clip_id)}`); return; }
+    if (done.status === "error") toast(done.error || "Клип не получился", true);
+    appReady();
+  }
+  box.innerHTML = act.length ? `<div class="card hl stack"><h2>Собирается</h2>${act.map((j) => `<div><b class="wrap small">${esc(j.title)}</b>
+    ${bar(j.progress)}<div class="row"><span class="muted small grow">${esc(j.stage || "в очереди")}</span>
+    <button class="btn sm ghost" style="width:auto" data-jc="${esc(j.id)}">Отменить</button></div></div>`).join("")}</div>` : "";
+  $$("[data-jc]", box).forEach((b) => (b.onclick = async () => { await api(`/api/jobs/${b.dataset.jc}/cancel`, { method: "POST" }); appJobs(); }));
+}
+
+async function appReady() {
+  const box = $("#readyBox");
+  if (!box) return;
+  const clips = (await api("/api/clips").catch(() => [])).filter((c) => c.exists !== false).slice(0, 8);
+  if (!box.isConnected) return;
+  box.innerHTML = clips.length ? `<div class="card"><h2>Готовые клипы</h2><ul class="list">${clips.map((c) => `<li><a class="item" href="#/clipview/${encodeURIComponent(c.id)}">
+    <span class="t"><b class="wrap">${esc(c.filename)}</b><br><span class="muted small">${fmt(c.start, false)}–${fmt(c.end, false)} · ${esc((c.src || "").split("/").pop())}</span></span>
+    <span class="chev">›</span></a></li>`).join("")}</ul></div>` : "";
+}
+
+/** Баннер: картинка из файлов поверх клипа 1080×1920 (сверху / по центру / снизу, ширина в %). Расчёт как в core/Banner.java. */
+function bannerBox(pos, size, ratio) {
+  let w = Math.max(0.2, Math.min(1, size)), h = (w * 1080 * ratio) / 1920;
+  if (h > 0.4) { h = 0.4; w = (h * 1920) / (1080 * ratio); }
+  const y = pos === "center" ? (1 - h) / 2 : pos === "bottom" ? 0.84 - h : 0.07;
+  return { left: ((1 - w) / 2) * 100, top: y * 100, width: w * 100, height: h * 100 };
+}
+function bannerCard(dr) {
+  const b = dr.banner;
+  return `<div class="card stack" id="bnCard"><h2>Баннер</h2>
+    <p class="muted small">Картинка из файлов телефона поверх клипа: логотип, надпись, призыв подписаться. PNG с прозрачным фоном смотрится лучше всего.</p>
+    ${b ? `<div class="bnPrev" id="bnPrev"><img class="bnFrame" src="/api/frame?file=${encodeURIComponent(dr.file)}&t=${(dr.start || 0).toFixed(1)}&w=480" alt="">
+        <img class="bnImg" id="bnImg" src="${mediaUrl(b.path)}" alt="Баннер"></div>
+      <p class="small wrap">Картинка: <b>${esc(b.path.split("/").pop())}</b></p>
+      <label class="f">Где</label>
+      <div class="seg seg3" id="bnPos">${[["top", "Сверху"], ["center", "По центру"], ["bottom", "Снизу"]].map(([v, n]) => `<button data-v="${v}" class="${b.pos === v ? "on" : ""}">${n}</button>`).join("")}</div>
+      <label class="f" for="bnSize">Ширина: <span id="bnSizeV">${Math.round(b.size * 100)}</span>% кадра</label>
+      <input type="range" id="bnSize" min="20" max="100" step="5" value="${Math.round(b.size * 100)}">
+      <div class="grid2"><button class="btn sm" id="bnPick">Другая картинка</button><button class="btn sm ghost" id="bnDel">Убрать баннер</button></div>`
+      : `<button class="btn" id="bnPick">Выбрать картинку</button>`}</div>`;
+}
+function bindBanner(dr) {
+  const card = $("#bnCard");
+  if (!card) return;
+  const redraw = () => { card.outerHTML = bannerCard(dr); bindBanner(dr); };
+  const place = () => {
+    const img = $("#bnImg"), b = dr.banner;
+    if (!img || !b || !img.naturalWidth) return;
+    const r = bannerBox(b.pos, b.size, img.naturalHeight / img.naturalWidth);
+    Object.assign(img.style, { left: r.left + "%", top: r.top + "%", width: r.width + "%", height: r.height + "%" });
+  };
+  window.onImagePicked = (path) => { dr.banner = { path, pos: (dr.banner || {}).pos || "top", size: (dr.banner || {}).size || 0.8 }; saveDraft(); redraw(); };
+  $("#bnPick").onclick = () => window.AndroidApp.pickImage();
+  const del = $("#bnDel"); if (del) del.onclick = () => { dr.banner = null; saveDraft(); redraw(); };
+  $$("#bnPos button").forEach((x) => (x.onclick = () => { dr.banner.pos = x.dataset.v; saveDraft(); $$("#bnPos button").forEach((y) => y.classList.toggle("on", y === x)); place(); }));
+  const sz = $("#bnSize");
+  if (sz) sz.oninput = () => { dr.banner.size = +sz.value / 100; $("#bnSizeV").textContent = sz.value; saveDraft(); place(); };
+  const img = $("#bnImg");
+  if (img) { if (img.complete) place(); else img.onload = place; }
+}
+
+// ------------------------------------------------------------------ «Подборка»: мир и Россия, сериалы и фильмы
+function fmtVotes(n) { n = Number(n) || 0; return n >= 1e6 ? (n / 1e6).toFixed(1).replace(".", ",") + " млн" : n >= 1e3 ? Math.round(n / 1e3) + " тыс." : String(n); }
+async function viewPick(_arg, q) {
+  const seq = S.seq;
+  await loadCfg();
+  if (staleSince(seq)) return;
+  const st = (S.pick = S.pick || { region: "world", type: "tv", kind: "popular" });
+  const seg = (id, key, opts) => `<div class="seg" id="${id}">${opts.map(([v, n]) => `<button data-v="${v}" class="${st[key] === v ? "on" : ""}">${n}</button>`).join("")}</div>`;
+  app.innerHTML = `<h1>Подборка</h1>
+  ${seg("pkRegion", "region", [["world", "Мир"], ["ru", "Россия"]])}
+  <div style="height:8px"></div>${seg("pkType", "type", [["tv", "Сериалы"], ["movie", "Фильмы"]])}
+  <div style="height:8px"></div>${seg("pkKind", "kind", [["popular", "Популярное"], ["best", "Лучшее по IMDb"]])}
+  <div id="pkBox"><p class="muted pad">Загружаю…</p></div>`;
+  for (const [id, key] of [["pkRegion", "region"], ["pkType", "type"], ["pkKind", "kind"]]) {
+    $$(`#${id} button`).forEach((b) => (b.onclick = () => { st[key] = b.dataset.v; viewPick(); }));
+  }
+  let page = 1, items = [];
+  const box = $("#pkBox");
+  const load = async () => {
+    let d;
+    try { d = await api(`/api/tmdb/pick?region=${st.region}&type=${st.type}&kind=${st.kind}&page=${page}`); }
+    catch (e) { box.innerHTML = `<p class="err pad">${esc(e.message)}</p>`; return; }
+    if (staleSince(seq) || !box.isConnected) return;
+    if (!d.configured) {
+      box.innerHTML = `<div class="card stack" style="margin-top:12px"><h2>Нужен ключ TMDB</h2>
+        <p>Списки фильмов и сериалов берутся из TMDB. Ключ бесплатный (пошагово — в инструкции, раздел «Подборка»).</p>
+        <a class="btn primary" href="#/settings">Ввести ключ в «Настройках»</a></div>`;
+      return;
+    }
+    items = items.concat(d.items || []);
+    box.innerHTML = (d.imdb_loading ? `<p class="muted small" style="margin:10px 2px">Загружаю рейтинги IMDb (один раз в неделю, около 8 МБ)…</p>` : "")
+      + `<div class="card" style="margin-top:12px">${items.length ? items.map((t, i) => `<div class="ruitem">
+        <b class="wrap">${i + 1}. ${esc(t.title)}${t.year ? ` (${esc(t.year)})` : ""}</b>
+        <span class="small">${t.imdb_rating ? `<b>IMDb ★ ${fmtRating(t.imdb_rating)}</b> <span class="muted">(${fmtVotes(t.imdb_votes)})</span> · ` : ""}<span class="muted">TMDB ★ ${fmtRating(t.rating)}</span></span>
+        ${t.overview ? `<span class="muted small wrap">${esc(t.overview)}</span>` : ""}
+        <div class="row">${t.imdb_id ? `<a class="btn sm ghost" target="_blank" rel="noopener" href="https://www.imdb.com/title/${esc(t.imdb_id)}/">IMDb ↗</a>` : ""}
+          <a class="btn sm ghost" target="_blank" rel="noopener" href="https://www.themoviedb.org/${t.type}/${t.id}?language=ru-RU">TMDB ↗</a></div></div>`).join("")
+        : `<p class="muted">Ничего не нашлось.</p>`}
+      ${d.page < d.total_pages ? `<div style="height:10px"></div><button class="btn ghost" id="pkMore">Показать ещё</button>` : ""}</div>
+      <p class="muted small" style="margin:10px 2px">Рейтинги: IMDb (открытые данные IMDb, для личного использования) и TMDB.</p>`;
+    const more = $("#pkMore", box);
+    if (more) more.onclick = () => { more.disabled = true; page++; load(); };
+    if (d.imdb_loading && !S.pickPoll) {
+      S.pickPoll = true;
+      every(async () => {
+        const jobs = await api("/api/jobs").catch(() => []);
+        if (!jobs.some((j) => j.type === "imdb" && (j.status === "queued" || j.status === "running"))) { S.pickPoll = false; if (parseHash().name === "pick") viewPick(); }
+      }, 4000);
+    }
+  };
+  S.pickPoll = false;
+  load();
+}
+
 function appAsrCard(st, se) {
   const models = st.asr_models || [];
   const langs = [["auto", "Определять автоматически"], ["ru", "Русский"], ["en", "English"], ["uk", "Українська"]];
@@ -1135,7 +1273,7 @@ async function viewSource(id) {
 // ------------------------------------------------------------------ старт
 if (!APP && "serviceWorker" in navigator && window.isSecureContext) navigator.serviceWorker.register("/sw.js").catch(() => {});
 if (APP) {
-  for (const k of ["discover", "ru"]) $(`#nav a[data-tab="${k}"]`).hidden = false;
-  $("#nav").classList.add("n7");
+  $('#nav a[data-tab="pick"]').hidden = false;
+  for (const k of ["today", "discover", "ru", "queue", "clips"]) $(`#nav a[data-tab="${k}"]`).hidden = true;
 }
 route(); refreshBadge();

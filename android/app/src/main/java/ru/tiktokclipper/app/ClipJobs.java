@@ -137,6 +137,13 @@ final class ClipJobs {
         meta.put("sub_style", style);
         meta.put("language", language);
         meta.put("layout_requested", layout);
+        // баннер-картинка поверх клипа
+        String banner = p.optString("banner", "");
+        if (!banner.isEmpty()) {
+            meta.put("banner", banner);
+            meta.put("banner_pos", p.optString("banner_pos", "top"));
+            meta.put("banner_size", Math.max(0.2, Math.min(1.0, p.optDouble("banner_size", 0.8))));
+        }
         meta.put("profile", prof);
         meta.put("words", Subs.wordsToJson(inClip));
         meta.put("lines", Subs.linesToJson(lines));
@@ -176,7 +183,13 @@ final class ClipJobs {
         work.mkdirs();
         File muxed = new File(work, "clip.mp4");
         int bitrate = e.store.settings().optInt("bitrate_mbps", 10) * 1000000;
-        VideoRenderer.Result r = new VideoRenderer().render(e.ctx, uri, sw, sh, info.optDouble("fps", 30), prof, eff,
+        VideoRenderer vr = new VideoRenderer();
+        android.graphics.Bitmap bannerBmp = loadBanner(ctx, meta);
+        if (bannerBmp != null) {
+            vr.banner(bannerBmp, ru.tiktokclipper.core.Banner.rect(meta.optString("banner_pos", "top"), meta.optDouble("banner_size", 0.8),
+                    bannerBmp.getWidth(), bannerBmp.getHeight(), 1080, 1920));
+        }
+        VideoRenderer.Result r = vr.render(e.ctx, uri, sw, sh, info.optDouble("fps", 30), prof, eff,
                 meta.getBoolean("mirror"), events, painter, startUs, endUs, bitrate, audio, muxed, ctx.cancel,
                 ctx.stage(lo + 0.08, 0.95, meta.optInt("version") == 0 ? "Собираю видео" : "Пересобираю видео"));
         meta.put("layout_used", r.layout);
@@ -322,6 +335,33 @@ final class ClipJobs {
         List<Subs.Line> cues = srt != null ? Subs.parseSrt(srt) : null;
         return new JSONObject().put("file", file).put("length", length)
                 .put("candidates", Moments.find(levels, length, cues, cuts, 8)).put("speech", cues != null && !cues.isEmpty());
+    }
+
+    /** Картинка баннера, уменьшенная до ширины кадра; null — без баннера (или файл недоступен — с предупреждением). */
+    android.graphics.Bitmap loadBanner(JobQueue.Ctx ctx, JSONObject meta) {
+        String id = meta.optString("banner", "");
+        if (id.isEmpty()) return null;
+        try {
+            Uri u = e.platform.resolve(id);
+            android.graphics.BitmapFactory.Options o = new android.graphics.BitmapFactory.Options();
+            o.inJustDecodeBounds = true;
+            try (java.io.InputStream in = e.ctx.getContentResolver().openInputStream(u)) {
+                android.graphics.BitmapFactory.decodeStream(in, null, o);
+            }
+            int sample = 1;
+            while (o.outWidth / (sample * 2) >= 1080) sample *= 2;
+            android.graphics.BitmapFactory.Options o2 = new android.graphics.BitmapFactory.Options();
+            o2.inSampleSize = sample;
+            android.graphics.Bitmap b;
+            try (java.io.InputStream in = e.ctx.getContentResolver().openInputStream(u)) {
+                b = android.graphics.BitmapFactory.decodeStream(in, null, o2);
+            }
+            if (b == null) throw new java.io.IOException("не картинка");
+            return b;
+        } catch (Exception ex) {
+            ctx.warn("Баннер не удалось открыть (" + ex.getMessage() + ") — клип собран без баннера.");
+            return null;
+        }
     }
 
     static double[] readDoubles(File f) throws JSONException {

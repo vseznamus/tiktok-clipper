@@ -51,6 +51,7 @@ import ru.tiktokclipper.core.Store;
  */
 public class AndroidPlatform implements Platform {
     public static final String PICKED = "_picked";
+    public static final String IMAGES = "_img"; // картинки для баннера
     static final String[] VIDEO_EXT = {".mp4", ".mkv", ".mov", ".webm", ".m4v", ".3gp", ".ts"};
 
     final Context ctx;
@@ -73,6 +74,27 @@ public class AndroidPlatform implements Platform {
 
     private SharedPreferences picked() {
         return ctx.getSharedPreferences("picked", Context.MODE_PRIVATE);
+    }
+
+    private SharedPreferences pickedImages() {
+        return ctx.getSharedPreferences("picked_img", Context.MODE_PRIVATE);
+    }
+
+    /** Картинка для баннера (кнопка «Выбрать картинку»). */
+    public String registerImage(Uri uri) {
+        String name = displayName(uri);
+        if (name == null) name = "banner.png";
+        String key = name;
+        SharedPreferences sp = pickedImages();
+        int n = 2;
+        while (sp.contains(key) && !uri.toString().equals(sp.getString(key, ""))) {
+            int dot = name.lastIndexOf('.');
+            key = (dot > 0 ? name.substring(0, dot) : name) + "_" + (n++) + (dot > 0 ? name.substring(dot) : "");
+        }
+        sp.edit().putString(key, uri.toString()).apply();
+        String id = IMAGES + "/" + key;
+        uriCache.put(id, uri);
+        return id;
     }
 
     /** Отдельно выбранное видео (кнопка «Выбрать видео на телефоне»). */
@@ -191,7 +213,11 @@ public class AndroidPlatform implements Platform {
         int slash = fileId.indexOf('/');
         if (slash <= 0) throw new ApiError(404, "Файл не найден");
         String sid = fileId.substring(0, slash);
-        if (sid.equals(PICKED)) {
+        if (sid.equals(IMAGES)) {
+            String s = pickedImages().getString(fileId.substring(slash + 1), null);
+            if (s == null) throw new ApiError(404, "Картинка не найдена");
+            u = Uri.parse(s);
+        } else if (sid.equals(PICKED)) {
             String s = picked().getString(fileId.substring(slash + 1), null);
             if (s == null) throw new ApiError(404, "Файл не найден");
             u = Uri.parse(s);
@@ -234,6 +260,10 @@ public class AndroidPlatform implements Platform {
     @Override
     public String mimeOf(String fileId) {
         String l = fileId.toLowerCase(Locale.ROOT);
+        if (l.endsWith(".png")) return "image/png";
+        if (l.endsWith(".jpg") || l.endsWith(".jpeg")) return "image/jpeg";
+        if (l.endsWith(".webp")) return "image/webp";
+        if (l.endsWith(".gif")) return "image/gif";
         if (l.endsWith(".webm")) return "video/webm";
         if (l.endsWith(".mkv")) return "video/x-matroska";
         if (l.endsWith(".3gp")) return "video/3gpp";

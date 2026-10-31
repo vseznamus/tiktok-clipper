@@ -27,6 +27,14 @@ public class DesktopServer {
         h.put("rebuild", ctx -> pf.rebuild(ctx, api[0]));
         h.put("moments", pf::moments);
         JobQueue[] qa = new JobQueue[1];
+        h.put("imdb", ctx -> api[0].imdb.job(ctx, url -> {
+            // имитация title.ratings.tsv.gz: рейтинги для id из fakeNet
+            String tsv = "tconst\taverageRating\tnumVotes\ntt0000101\t9.5\t2300000\ntt0000102\t8.6\t60000\ntt0000103\t8.9\t40000\ntt0000104\t7.8\t12000\n";
+            ByteArrayOutputStream bo = new ByteArrayOutputStream();
+            try (java.util.zip.GZIPOutputStream gz = new java.util.zip.GZIPOutputStream(bo)) { gz.write(tsv.getBytes(StandardCharsets.UTF_8)); }
+            try { Thread.sleep(1500); } catch (InterruptedException ignored) { }
+            return new ByteArrayInputStream(bo.toByteArray());
+        }));
         h.put("plan", ctx -> Planner.run(ctx, store, pf, api[0].tmdb, pf::analyze, qa[0], java.time.LocalDate.now()));
         h.put("model", pf::model);
         JobQueue q = new JobQueue(store.jobsFile(), h);
@@ -42,7 +50,11 @@ public class DesktopServer {
     static Net.Resp fakeNet(String url, Map<String, String> h, String body) {
         String j;
         if (url.contains("api.themoviedb.org")) {
-            if (url.contains("/discover/")) {
+            if (url.contains("/external_ids")) {
+                String id = url.contains("/tv/1396/") ? "tt0000101" : url.contains("/tv/81/") ? "tt0000103" : url.contains("/tv/63770/") ? "tt0000104"
+                        : url.contains("/movie/603/") ? "tt0000102" : "";
+                j = "{\"imdb_id\":" + (id.isEmpty() ? "null" : "\"" + id + "\"") + "}";
+            } else if (url.contains("/discover/")) {
                 boolean tv = url.contains("/discover/tv");
                 String[][] r = tv ? new String[][]{{"63770", "Кухня", "2012-11-12", "7.9"}, {"81", "Ликвидация", "2007-12-04", "8.5"}}
                         : new String[][]{{"20992", "Брат", "1997-05-17", "8.0"}, {"5", "Москва слезам не верит", "1980-02-11", "7.9"}};
@@ -86,7 +98,7 @@ public class DesktopServer {
             int i = id.indexOf('/');
             if (i <= 0) throw new ApiError(404, "Файл не найден");
             String sid = id.substring(0, i), name = id.substring(i + 1);
-            File dir = sid.equals("_picked") ? picked : new File(store.getSource(sid).optString("folder_uri"));
+            File dir = sid.equals("_picked") || sid.equals("_img") ? picked : new File(store.getSource(sid).optString("folder_uri"));
             File f = new File(dir, name);
             if (!f.isFile() || name.contains("..")) throw new ApiError(404, "Файл не найден");
             return f;
@@ -123,7 +135,7 @@ public class DesktopServer {
             };
         }
 
-        public String mimeOf(String id) { return "video/mp4"; }
+        public String mimeOf(String id) { return id.toLowerCase().endsWith(".png") ? "image/png" : "video/mp4"; }
 
         public JSONObject probe(String id) throws Exception {
             File f = resolve(id);

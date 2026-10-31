@@ -76,6 +76,79 @@ public final class Tmdb {
         return out;
     }
 
+    /** Рейтинги IMDb (если загружены) — для «Лучшее по IMDb». */
+    public ImdbRatings imdb;
+
+    /**
+     * «Подборка»: region world — весь мир, ru — русские и советские (язык оригинала — русский);
+     * type tv / movie; kind popular — популярное сейчас, best — лучшее (рейтинг IMDb, если загружен).
+     */
+    public JSONObject pick(String region, String type, String kind, int page, boolean refresh) throws Exception {
+        JSONObject out = new JSONObject().put("configured", configured());
+        if (!configured()) return out;
+        String t = "movie".equals(type) ? "movie" : "tv";
+        boolean ru = "ru".equals(region), best = "best".equals(kind);
+        int pg = Math.max(1, Math.min(20, page));
+        String path;
+        if (ru) {
+            path = "discover/" + t + "?language=ru-RU&include_adult=false&with_original_language=ru&page=" + pg
+                    + (best ? "&sort_by=vote_average.desc&vote_count.gte=" + (t.equals("tv") ? 50 : 100) : "&sort_by=popularity.desc");
+        } else {
+            path = (best ? t + "/top_rated" : "trending/" + t + "/week") + "?language=ru-RU&page=" + pg;
+        }
+        JSONObject r = get(path, LIST_TTL, refresh);
+        JSONArray items = items(r, t, 20);
+        withImdb(items);
+        if (best) {
+            List<JSONObject> l = new ArrayList<>();
+            for (int i = 0; i < items.length(); i++) l.add(items.getJSONObject(i));
+            Collections.sort(l, (a, b) -> {
+                boolean ha = a.has("imdb_rating"), hb = b.has("imdb_rating");
+                if (ha != hb) return ha ? -1 : 1;
+                return Double.compare(b.optDouble(ha ? "imdb_rating" : "rating"), a.optDouble(ha ? "imdb_rating" : "rating"));
+            });
+            items = new JSONArray();
+            for (JSONObject o : l) items.put(o);
+        }
+        out.put("items", items).put("page", r.optInt("page", pg)).put("total_pages", Math.min(20, r.optInt("total_pages", 1)));
+        out.put("imdb_loaded", imdb != null && imdb.loaded());
+        return out;
+    }
+
+    /** imdb_id из TMDB (кэш на телефоне) и рейтинг IMDb из локального набора. */
+    void withImdb(JSONArray items) throws Exception {
+        java.io.File f = new java.io.File(store.dir, "tmdb_imdb.json");
+        JSONObject ids;
+        synchronized (this) {
+            ids = Store.readObject(f);
+        }
+        boolean changed = false;
+        for (int i = 0; i < items.length(); i++) {
+            JSONObject it = items.getJSONObject(i);
+            String k = it.optString("type") + ":" + it.optLong("id");
+            String tt = ids.optString(k, null);
+            if (tt == null) {
+                try {
+                    tt = get(it.optString("type") + "/" + it.optLong("id") + "/external_ids", SHOW_TTL, false).optString("imdb_id", "");
+                } catch (ApiError e) {
+                    continue; // не беда — без IMDb
+                }
+                if (tt == null || "null".equals(tt)) tt = "";
+                ids.put(k, tt);
+                changed = true;
+            }
+            if (tt.isEmpty()) continue;
+            it.put("imdb_id", tt);
+            double[] rv = imdb != null ? imdb.get(tt) : null;
+            if (rv != null) it.put("imdb_rating", rv[0]).put("imdb_votes", (long) rv[1]);
+        }
+        if (changed) {
+            synchronized (this) {
+                Store.writeJson(f, ids);
+            }
+        }
+    }
+
     public JSONArray search(String q) throws Exception {
         if (q.trim().isEmpty()) return new JSONArray();
         JSONArray all = items(get("search/multi?language=ru-RU&include_adult=false&query=" + Net.enc(q.trim()), LIST_TTL, false), null, 20);
