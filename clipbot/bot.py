@@ -11,8 +11,6 @@ import secrets
 import signal
 import time
 
-import aiohttp
-
 from .spike import ChannelChat, Spike
 from .store import Store
 from .telegram import Telegram
@@ -287,18 +285,24 @@ class ClipBot:
 
     # ------------------------------------------------------------ циклы
     async def poll(self, stop: asyncio.Event) -> None:
-        offset = 0
+        offset, down = 0, False
         while not stop.is_set():
             try:
-                for u in await self.tg.updates(offset):
+                ups = await self.tg.updates(offset)
+                if down:
+                    print("Телеграм снова доступен", flush=True)
+                    down = False
+                for u in ups:
                     offset = u["update_id"] + 1
                     if "message" in u:
                         try:
                             await self.handle(u["message"])
                         except Exception as e:  # noqa: BLE001 — одна неудачная команда не роняет бота
                             print("ошибка команды:", e, flush=True)
-            except (aiohttp.ClientError, asyncio.TimeoutError, RuntimeError) as e:
-                print("Телеграм недоступен:", e, flush=True)
+            except (OSError, asyncio.TimeoutError, RuntimeError) as e:
+                if not down:  # в журнал — один раз за сбой, чтобы он не разрастался
+                    print("Телеграм недоступен:", e, flush=True)
+                    down = True
                 await asyncio.sleep(5)
 
     async def ticker(self, stop: asyncio.Event) -> None:
@@ -312,7 +316,7 @@ class ClipBot:
     async def run(self, stop: asyncio.Event) -> None:
         try:
             await self.tg.set_commands(COMMANDS)
-        except (aiohttp.ClientError, RuntimeError) as e:
+        except (OSError, RuntimeError) as e:
             print("не удалось задать команды:", e, flush=True)
         work = [asyncio.create_task(c) for c in (self.poll(stop), self.ticker(stop), self.chat.run(stop))]
         await stop.wait()                     # остановка (docker stop) — не ждём открытых соединений
@@ -330,17 +334,16 @@ def env(name: str, default: str | None = None) -> str:
 
 async def main() -> None:
     store = Store(os.path.join(os.environ.get("DATA_DIR", "/data"), "state.json"))
-    timeout = aiohttp.ClientTimeout(total=60)
-    async with aiohttp.ClientSession(timeout=timeout) as s:
-        tg = Telegram(s, env("TELEGRAM_BOT_TOKEN"))
-        tw = Twitch(s, env("TWITCH_CLIENT_ID"), env("TWITCH_CLIENT_SECRET"), os.environ.get("TWITCH_REDIRECT_URI", "http://localhost"), store)
-        bot = ClipBot(store, tg, tw, env("BOT_PAIR_CODE"))
-        stop = asyncio.Event()
-        loop = asyncio.get_running_loop()
-        for sig in (signal.SIGTERM, signal.SIGINT):
-            loop.add_signal_handler(sig, stop.set)
-        print("Бот автоклипов запущен", flush=True)
-        await bot.run(stop)
+    tg = Telegram(env("TELEGRAM_BOT_TOKEN"))
+    tw = Twitch(env("TWITCH_CLIENT_ID"), env("TWITCH_CLIENT_SECRET"), os.environ.get("TWITCH_REDIRECT_URI", "http://localhost"), store)
+    bot = ClipBot(store, tg, tw, env("BOT_PAIR_CODE"))
+    stop = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        loop.add_signal_handler(sig, stop.set)
+    print("Бот автоклипов запущен", flush=True)
+    await bot.run(stop)
+    os._exit(0)  # не ждать потоков с долгими запросами (long polling) — всё сохранено
 
 
 if __name__ == "__main__":

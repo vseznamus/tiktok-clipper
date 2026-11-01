@@ -9,7 +9,7 @@
 тот же интерфейс внутри WebView. Сборка — [android/BUILD_APK.md](android/BUILD_APK.md),
 инструкция пользователя — [INSTRUCTION_APP.md](INSTRUCTION_APP.md).
 
-**Телеграм-бот автоклипов Twitch** (для VPS): следит за чатом выбранных каналов и при всплеске делает клип
+**Телеграм-бот автоклипов Twitch** (для VPS или роутера Keenetic с Entware): следит за чатом выбранных каналов и при всплеске делает клип
 встроенным инструментом Twitch, ссылку присылает в Телеграм — [clipbot/README.md](clipbot/README.md).
 
 ## Что умеет

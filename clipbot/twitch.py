@@ -3,12 +3,11 @@
 from __future__ import annotations
 
 import asyncio
-import ssl
 import time
 import urllib.parse
 from dataclasses import dataclass
 
-import aiohttp
+from .net import request, ssl_context
 
 SCOPES = "clips:edit chat:read"
 
@@ -51,9 +50,8 @@ class Clip:
 
 
 class Twitch:
-    def __init__(self, session: aiohttp.ClientSession, client_id: str, client_secret: str, redirect_uri: str, store,
+    def __init__(self, client_id: str, client_secret: str, redirect_uri: str, store,
                  api_base: str = "https://api.twitch.tv/helix", id_base: str = "https://id.twitch.tv"):
-        self.s = session
         self.client_id = client_id
         self.secret = client_secret
         self.redirect = redirect_uri
@@ -68,24 +66,23 @@ class Twitch:
 
     async def exchange(self, code: str) -> str:
         """Код авторизации → токены; возвращает логин Twitch владельца."""
-        async with self.s.post(f"{self.idb}/oauth2/token", data={
+        r = await request("POST", f"{self.idb}/oauth2/token", form={
             "client_id": self.client_id, "client_secret": self.secret, "code": code,
-            "grant_type": "authorization_code", "redirect_uri": self.redirect}) as r:
-            if r.status != 200:
-                raise TwitchError("Twitch не принял код. Ссылка из /login действует несколько минут — получите новую и повторите. "
-                                  "Проверьте, что в приложении на dev.twitch.tv адрес возврата — " + self.redirect)
-            tok = await r.json()
-        await self._save_tokens(tok)
+            "grant_type": "authorization_code", "redirect_uri": self.redirect})
+        if r.status != 200:
+            raise TwitchError("Twitch не принял код. Ссылка из /login действует несколько минут — получите новую и повторите. "
+                              "Проверьте, что в приложении на dev.twitch.tv адрес возврата — " + self.redirect)
+        await self._save_tokens(r.json())
         info = await self.validate()
         self.store.update_twitch(login=info["login"], user_id=info["user_id"])
         return info["login"]
 
     async def validate(self) -> dict:
-        async with self.s.get(f"{self.idb}/oauth2/validate",
-                              headers={"Authorization": "OAuth " + self.store.twitch().get("access", "")}) as r:
-            if r.status != 200:
-                raise TwitchError("Вход в Twitch устарел — отправьте /login")
-            return await r.json()
+        r = await request("GET", f"{self.idb}/oauth2/validate",
+                          headers={"Authorization": "OAuth " + self.store.twitch().get("access", "")})
+        if r.status != 200:
+            raise TwitchError("Вход в Twitch устарел — отправьте /login")
+        return r.json()
 
     async def _save_tokens(self, tok: dict) -> None:
         self.store.update_twitch(access=tok["access_token"], refresh=tok.get("refresh_token", ""),
@@ -96,12 +93,12 @@ class Twitch:
             ref = self.store.twitch().get("refresh")
             if not ref:
                 raise TwitchError("Нет входа в Twitch — отправьте /login")
-            async with self.s.post(f"{self.idb}/oauth2/token", data={
+            r = await request("POST", f"{self.idb}/oauth2/token", form={
                 "client_id": self.client_id, "client_secret": self.secret,
-                "grant_type": "refresh_token", "refresh_token": ref}) as r:
-                if r.status != 200:
-                    raise TwitchError("Вход в Twitch истёк — отправьте /login")
-                await self._save_tokens(await r.json())
+                "grant_type": "refresh_token", "refresh_token": ref})
+            if r.status != 200:
+                raise TwitchError("Вход в Twitch истёк — отправьте /login")
+            await self._save_tokens(r.json())
 
     async def token(self) -> str:
         t = self.store.twitch()
@@ -115,15 +112,11 @@ class Twitch:
     async def helix(self, method: str, path: str, params: dict | None = None) -> tuple[int, dict]:
         for attempt in range(2):
             h = {"Client-Id": self.client_id, "Authorization": "Bearer " + await self.token()}
-            async with self.s.request(method, f"{self.api}/{path}", params=params, headers=h) as r:
-                if r.status == 401 and attempt == 0:
-                    await self.refresh()
-                    continue
-                try:
-                    body = await r.json(content_type=None)
-                except Exception:  # noqa: BLE001 — пустое или не-JSON тело
-                    body = {}
-                return r.status, body or {}
+            r = await request(method, f"{self.api}/{path}", params=params, headers=h)
+            if r.status == 401 and attempt == 0:
+                await self.refresh()
+                continue
+            return r.status, r.json()
         return 401, {}
 
     async def user(self, login: str) -> dict | None:
@@ -228,7 +221,7 @@ class Chat:
     async def _session(self, stop: asyncio.Event) -> None:
         tok = await self.tw.token()
         nick = self.tw.store.twitch().get("login") or "justinfan12345"
-        ctx = ssl.create_default_context() if self.tls else None
+        ctx = ssl_context() if self.tls else None
         reader, writer = await asyncio.open_connection(self.host, self.port, ssl=ctx)
         self.writer = writer
         self._send(f"PASS oauth:{tok}")

@@ -9,7 +9,7 @@ import stat
 
 import pytest
 
-aiohttp = pytest.importorskip("aiohttp")
+pytest.importorskip("aiohttp")  # только для поддельных серверов в тесте; самому боту сторонние пакеты не нужны
 from aiohttp import web  # noqa: E402
 
 from clipbot.bot import ClipBot  # noqa: E402
@@ -197,115 +197,114 @@ async def _end_to_end(tmp_path):
     now = [10_000.0]
     store = Store(tmp_path / "state.json")
     stop = asyncio.Event()
-    async with aiohttp.ClientSession() as s:
-        tg = Telegram(s, Fake.TOKEN, base)
-        tw = Twitch(s, "cid", "secret", "http://localhost", store, api_base=f"{base}/helix", id_base=base)
-        tw.clip_ready = functools.partial(Twitch.clip_ready, tw, step=0.05)
-        chat = Chat(tw, None, host="127.0.0.1", port=irc_port, use_tls=False)
-        bot = ClipBot(store, tg, tw, "13572468", chat=chat, clock=lambda: now[0])
-        run = asyncio.create_task(bot.run(stop))
-        try:
-            # чужой человек без кода — бот не привязывается
-            fake.say(500, "/start")
-            await wait_for(lambda: len(fake.sent) >= 1)
-            assert store.owner is None and "код привязки" in fake.sent[-1]["text"]
-            fake.say(500, "/start 00000000")
-            await wait_for(lambda: len(fake.sent) >= 2)
-            assert store.owner is None
+    tg = Telegram(Fake.TOKEN, base)
+    tw = Twitch("cid", "secret", "http://localhost", store, api_base=f"{base}/helix", id_base=base)
+    tw.clip_ready = functools.partial(Twitch.clip_ready, tw, step=0.05)
+    chat = Chat(tw, None, host="127.0.0.1", port=irc_port, use_tls=False)
+    bot = ClipBot(store, tg, tw, "13572468", chat=chat, clock=lambda: now[0])
+    run = asyncio.create_task(bot.run(stop))
+    try:
+        # чужой человек без кода — бот не привязывается
+        fake.say(500, "/start")
+        await wait_for(lambda: len(fake.sent) >= 1)
+        assert store.owner is None and "код привязки" in fake.sent[-1]["text"]
+        fake.say(500, "/start 00000000")
+        await wait_for(lambda: len(fake.sent) >= 2)
+        assert store.owner is None
 
-            # владелец с кодом → приветствие и ссылка входа в Twitch
-            fake.say(7, "/start 13572468")
-            await wait_for(lambda: any("oauth2/authorize" in t for t in fake.texts()))
-            assert store.owner == 7
-            state = store.data["login_state"]
-            assert state and f"state={state}" in fake.texts()[-1]
-            assert fake.sent[-2]["reply_markup"]["keyboard"][0][0]["text"] == "📋 Каналы"
+        # владелец с кодом → приветствие и ссылка входа в Twitch
+        fake.say(7, "/start 13572468")
+        await wait_for(lambda: any("oauth2/authorize" in t for t in fake.texts()))
+        assert store.owner == 7
+        state = store.data["login_state"]
+        assert state and f"state={state}" in fake.texts()[-1]
+        assert fake.sent[-2]["reply_markup"]["keyboard"][0][0]["text"] == "📋 Каналы"
 
-            # теперь чужой — отказ
-            fake.say(500, "/list")
-            await wait_for(lambda: "личный бот" in fake.texts()[-1])
+        # теперь чужой — отказ
+        fake.say(500, "/list")
+        await wait_for(lambda: "личный бот" in fake.texts()[-1])
 
-            # плохой код, затем правильный адрес возврата
-            fake.say(7, f"http://localhost/?code=badcode&state={state}")
-            await wait_for(lambda: "не принял код" in fake.texts()[-1])
-            fake.say(7, f"http://localhost/?code=goodcode&scope=clips%3Aedit+chat%3Aread&state={state}")
-            await wait_for(lambda: "Вошёл в Twitch как me" in fake.texts()[-1])
-            assert store.twitch()["access"].startswith("tok") and store.data["login_state"] is None
-            await wait_for(lambda: any(line.startswith("PASS oauth:tok") for line in fake.irc_lines))
-            assert "NICK me" in fake.irc_lines
+        # плохой код, затем правильный адрес возврата
+        fake.say(7, f"http://localhost/?code=badcode&state={state}")
+        await wait_for(lambda: "не принял код" in fake.texts()[-1])
+        fake.say(7, f"http://localhost/?code=goodcode&scope=clips%3Aedit+chat%3Aread&state={state}")
+        await wait_for(lambda: "Вошёл в Twitch как me" in fake.texts()[-1])
+        assert store.twitch()["access"].startswith("tok") and store.data["login_state"] is None
+        await wait_for(lambda: any(line.startswith("PASS oauth:tok") for line in fake.irc_lines))
+        assert "NICK me" in fake.irc_lines
 
-            # каналы: кнопка «Добавить» → логин; ссылка; несуществующий; дубликат
-            fake.say(7, "➕ Добавить канал")
-            await wait_for(lambda: "Пришлите логин" in fake.texts()[-1])
-            fake.say(7, "https://www.twitch.tv/5opka")
-            await wait_for(lambda: "Слежу за 5opka" in fake.texts()[-1])
-            await wait_for(lambda: "JOIN #5opka" in fake.irc_lines)
-            fake.say(7, "/add nobody_here")
-            await wait_for(lambda: "не найден" in fake.texts()[-1])
-            fake.say(7, "/add 5opka")
-            await wait_for(lambda: "уже в списке" in fake.texts()[-1])
-            fake.say(7, "/add noclips")
-            await wait_for(lambda: "Слежу за NOCLIPS" in fake.texts()[-1])
+        # каналы: кнопка «Добавить» → логин; ссылка; несуществующий; дубликат
+        fake.say(7, "➕ Добавить канал")
+        await wait_for(lambda: "Пришлите логин" in fake.texts()[-1])
+        fake.say(7, "https://www.twitch.tv/5opka")
+        await wait_for(lambda: "Слежу за 5opka" in fake.texts()[-1])
+        await wait_for(lambda: "JOIN #5opka" in fake.irc_lines)
+        fake.say(7, "/add nobody_here")
+        await wait_for(lambda: "не найден" in fake.texts()[-1])
+        fake.say(7, "/add 5opka")
+        await wait_for(lambda: "уже в списке" in fake.texts()[-1])
+        fake.say(7, "/add noclips")
+        await wait_for(lambda: "Слежу за NOCLIPS" in fake.texts()[-1])
 
-            # сообщения из чата доходят до счётчика
-            await wait_for(lambda: chat.connected.is_set())
-            fake.chat("5opka", "привет")
-            await wait_for(lambda: bot.chats["5opka"].started is not None)
+        # сообщения из чата доходят до счётчика
+        await wait_for(lambda: chat.connected.is_set())
+        fake.chat("5opka", "привет")
+        await wait_for(lambda: bot.chats["5opka"].started is not None)
 
-            # настройки
-            fake.say(7, "/threshold 2,5")
-            await wait_for(lambda: "✅ Порог" in fake.texts()[-1])
-            assert bot.chats["5opka"].threshold == 2.5
-            fake.say(7, "/cooldown 999")
-            await wait_for(lambda: "число от 1 до 60" in fake.texts()[-1])
+        # настройки
+        fake.say(7, "/threshold 2,5")
+        await wait_for(lambda: "✅ Порог" in fake.texts()[-1])
+        assert bot.chats["5opka"].threshold == 2.5
+        fake.say(7, "/cooldown 999")
+        await wait_for(lambda: "число от 1 до 60" in fake.texts()[-1])
 
-            # всплеск → клип → ссылка в Телеграм
-            sent_before = len(fake.sent)
-            c = bot.chats["5opka"]
-            c.per_sec.clear(); c.started = None
-            steady(c, 20_000, 180)
-            steady(c, 20_180, 15, per_sec=5, text="KEKW")
-            now[0] = 20_194.9
+        # всплеск → клип → ссылка в Телеграм
+        sent_before = len(fake.sent)
+        c = bot.chats["5opka"]
+        c.per_sec.clear(); c.started = None
+        steady(c, 20_000, 180)
+        steady(c, 20_180, 15, per_sec=5, text="KEKW")
+        now[0] = 20_194.9
+        await bot.tick()
+        await wait_for(lambda: len(fake.sent) > sent_before)
+        msg = fake.texts()[-1]
+        assert msg.startswith("🔥 5opka — чат ×") and "«KEKW»" in msg
+        assert "Клип: https://clips.twitch.tv/Clip1 · эфир 1:02:03" in msg
+        assert store.channels()["5opka"]["clips"] == 1
+        await bot.tick()                                         # пауза между клипами — второго нет
+        await asyncio.sleep(0.2)
+        assert len(fake.sent) == sent_before + 1
+
+        # канал без клипов → понятная ошибка, повтор не спамит
+        n = bot.chats["noclips"]
+        for k in range(2):
+            n.per_sec.clear(); n.started = None; n.last_clip = -1e18
+            steady(n, 30_000 + k * 1000, 180)
+            steady(n, 30_180 + k * 1000, 15, per_sec=5, text="ОРУ")
+            now[0] = 30_194.9 + k * 1000
             await bot.tick()
-            await wait_for(lambda: len(fake.sent) > sent_before)
-            msg = fake.texts()[-1]
-            assert msg.startswith("🔥 5opka — чат ×") and "«KEKW»" in msg
-            assert "Клип: https://clips.twitch.tv/Clip1 · эфир 1:02:03" in msg
-            assert store.channels()["5opka"]["clips"] == 1
-            await bot.tick()                                         # пауза между клипами — второго нет
-            await asyncio.sleep(0.2)
-            assert len(fake.sent) == sent_before + 1
+            await asyncio.sleep(0.3)
+        errs = [t for t in fake.texts() if "запретил клипы" in t]
+        assert len(errs) == 1 and errs[0].startswith("⚠️ NOCLIPS")
 
-            # канал без клипов → понятная ошибка, повтор не спамит
-            n = bot.chats["noclips"]
-            for k in range(2):
-                n.per_sec.clear(); n.started = None; n.last_clip = -1e18
-                steady(n, 30_000 + k * 1000, 180)
-                steady(n, 30_180 + k * 1000, 15, per_sec=5, text="ОРУ")
-                now[0] = 30_194.9 + k * 1000
-                await bot.tick()
-                await asyncio.sleep(0.3)
-            errs = [t for t in fake.texts() if "запретил клипы" in t]
-            assert len(errs) == 1 and errs[0].startswith("⚠️ NOCLIPS")
-
-            # пауза, список, удаление, статус
-            fake.say(7, "⏸ Пауза")
-            await wait_for(lambda: "на паузе" in fake.texts()[-1])
-            assert store.settings()["paused"] is True
-            fake.say(7, "/list")
-            await wait_for(lambda: "клипов: 1" in fake.texts()[-1])
-            fake.say(7, "/del 5opka")
-            await wait_for(lambda: "Больше не слежу за 5opka" in fake.texts()[-1])
-            await wait_for(lambda: "PART #5opka" in fake.irc_lines)
-            fake.say(7, "/status")
-            await wait_for(lambda: "вход как me" in fake.texts()[-1])
-            assert "Каналов: 1" in fake.texts()[-1] and "на паузе" in fake.texts()[-1]
-        finally:
-            stop.set()
-            fake.say(7, "/help")                                    # разбудить long polling
-            for w in fake.irc_writers:
-                w.close()
-            await asyncio.wait_for(run, 5)
+        # пауза, список, удаление, статус
+        fake.say(7, "⏸ Пауза")
+        await wait_for(lambda: "на паузе" in fake.texts()[-1])
+        assert store.settings()["paused"] is True
+        fake.say(7, "/list")
+        await wait_for(lambda: "клипов: 1" in fake.texts()[-1])
+        fake.say(7, "/del 5opka")
+        await wait_for(lambda: "Больше не слежу за 5opka" in fake.texts()[-1])
+        await wait_for(lambda: "PART #5opka" in fake.irc_lines)
+        fake.say(7, "/status")
+        await wait_for(lambda: "вход как me" in fake.texts()[-1])
+        assert "Каналов: 1" in fake.texts()[-1] and "на паузе" in fake.texts()[-1]
+    finally:
+        stop.set()
+        fake.say(7, "/help")                                    # разбудить long polling
+        for w in fake.irc_writers:
+            w.close()
+        await asyncio.wait_for(run, 5)
     irc.close()
     await runner.cleanup()
 
