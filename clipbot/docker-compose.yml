@@ -1,0 +1,12 @@
+# Бот автоклипов Twitch. Запуск:  docker compose up -d --build   (ключи — в файле .env рядом, образец .env.example)
+services:
+  clipbot:
+    build: .
+    image: tiktok-clipbot:latest
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - ./data:/data        # владелец, каналы, настройки, вход в Twitch (файл state.json, права 600)
+    logging:
+      driver: json-file
+      options: {max-size: "5m", max-file: "2"}
