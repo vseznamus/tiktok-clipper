@@ -57,6 +57,8 @@ final class ClipJobs {
         JSONObject settings = st.settings();
         JSONObject src = st.getSource(p.optString("source_id", ""));
         JSONObject prof = Store.fullProfile(src);
+        // рамки вебкамеры и экрана этого видео (автоподбор или ручная настройка на экране «Клип»)
+        for (String k : new String[]{"cam_rect", "screen_rect"}) if (p.has(k)) prof.put(k, p.get(k));
         String file = p.getString("file");
         ctx.progress(0.01, "Читаю видео");
         Uri uri = e.platform.resolve(file);
@@ -163,8 +165,11 @@ final class ClipJobs {
             meta.put("banner_plate", p.optBoolean("banner_plate", false));
         }
         if (p.optBoolean("night")) meta.put("night", true);
+        String capName = settings.optString("caption_name", "").trim(), capLogin = settings.optString("caption_login", "").trim();
         meta.put("caption", src != null && "stream".equals(src.optString("type"))
                 ? ru.tiktokclipper.core.Captions.stream(src.optString("title"), src.optString("twitch_login"), file)
+                : !capName.isEmpty() || !capLogin.isEmpty()
+                ? ru.tiktokclipper.core.Captions.stream(capName.isEmpty() ? capLogin : capName, capLogin, file)
                 : ru.tiktokclipper.core.Captions.make(file));
         meta.put("profile", prof);
         meta.put("words", Subs.wordsToJson(inClip));
@@ -185,7 +190,7 @@ final class ClipJobs {
         String eff = layoutReq;
         if ("split".equals(layoutReq) && !VideoRenderer.validCam(prof, sw, sh)) {
             ctx.warn("Рамка вебкамеры не задана или слишком мала — клип собран в режиме «один кадр». "
-                    + "Задайте рамку в «Настройки» → источник → «Рамка вебкамеры».");
+                    + "Задайте её на экране «Клип» → «Настроить рамки».");
             eff = "single";
         }
         JSONObject style = Store.subStyle(meta.getString("sub_style"));
@@ -337,6 +342,7 @@ final class ClipJobs {
         for (JSONObject c : best) {
             JSONObject cp = ru.tiktokclipper.core.Template.clipParams(tpl, file, c.getDouble("start"), c.getDouble("end"), srt);
             if (!p.optString("source_id").isEmpty()) cp.put("source_id", p.getString("source_id")); // рамка вебкамеры стримера
+            for (String k : new String[]{"layout", "cam_rect", "screen_rect"}) if (p.has(k)) cp.put(k, p.get(k)); // рамки этого видео
             String name = file.substring(file.lastIndexOf('/') + 1);
             jobs.put(e.queue.submit("clip", cp, "Клип: " + name + " (" + Api.fmt(c.getDouble("start")) + ")").getString("id"));
         }

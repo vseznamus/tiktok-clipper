@@ -46,94 +46,127 @@ async function check(page, name, full = false) {
     step("без ключа сессии API отвечает 401");
     browser = await chromium.launch();
     const ctx = await browser.newContext({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 2, isMobile: true, hasTouch: true });
-    // картинка для баннера (PNG 4×2) и чат записи рядом с эфиром (формат TwitchDownloader): всплеск «KEKW» на 25-й секунде
+    // картинка для баннера (PNG 4×2); запись эфира с вебкамерой справа снизу — «выбрана на телефоне»
     const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAQAAAACCAYAAAB/qH1jAAAAFklEQVR42mP8z8Dwn4GBgYGJAQoYGQAkpAMBGPyO5AAAAABJRU5ErkJggg==", "base64");
-    fs.writeFileSync(path.join(demo, "media/matrix/banner.png"), png);
-    const comments = [];
-    for (let t = 0; t < 40; t += 3) comments.push({ content_offset_seconds: t, commenter: { display_name: "z" }, message: { body: "привет" } });
-    for (let i = 0; i < 25; i++) comments.push({ content_offset_seconds: 25 + i * 0.1, commenter: { display_name: "z" + i }, message: { body: "KEKW ахаха" } });
-    fs.writeFileSync(path.join(demo, "media/streamer/stream_2026-10-28.json"), JSON.stringify({ video: { title: "Эфир" }, comments }));
-    await ctx.addInitScript((d) => {
+    const pick = path.join(demo, "media/matrix");
+    fs.writeFileSync(path.join(pick, "banner.png"), png);
+    fs.copyFileSync(path.join(demo, "media/streamer/stream_2026-10-28.mp4"), path.join(pick, "stream_2026-10-28.mp4"));
+    const chatPath = path.join(pick, "stream_2026-10-28.json");
+    if (fs.existsSync(chatPath)) fs.unlinkSync(chatPath);
+    await ctx.addInitScript(() => {
       window.__calls = [];
+      const vids = ["_picked/stream_2026-10-28.mp4", "_picked/matrix.mp4"];
       window.AndroidApp = {
-        pickFolder: () => { window.__calls.push("pickFolder"); setTimeout(() => window.onFolderPicked({ uri: d, name: "streamer" }), 50); },
-        pickVideo: () => { window.__calls.push("pickVideo"); setTimeout(() => window.onVideoPicked("_picked/old_rip.mp4"), 50); },
+        pickVideo: () => { window.__calls.push("pickVideo"); const n = window.__calls.filter((c) => c === "pickVideo").length;
+          setTimeout(() => window.onVideoPicked(vids[Math.min(n, vids.length) - 1]), 50); },
+        pickChat: (id) => { window.__calls.push("pickChat:" + id); setTimeout(() => window.onChatPicked("stream_2026-10-28.json"), 50); },
+        dropChat: (id) => window.__calls.push("dropChat:" + id),
         pickImage: () => { window.__calls.push("pickImage"); setTimeout(() => window.onImagePicked("_img/banner.png"), 50); },
+        pickFolder: () => window.__calls.push("pickFolder"),
         copyText: (t) => window.__calls.push("copy:" + t),
         shareClip: (id) => window.__calls.push("share:" + id),
         openClip: (id) => window.__calls.push("open:" + id),
         version: () => "test",
       };
-    }, path.join(demo, "media/streamer"));
+    });
     const page = await ctx.newPage();
     page.on("pageerror", (e) => report.errors.push("pageerror: " + e.message));
     page.on("console", (m) => { if (m.type() === "error") report.errors.push("console: " + m.text()); });
     page.on("dialog", (d) => d.accept());
     const noJunk = async (where) => {
       const t = (await page.innerText("body")).toLowerCase();
-      const hit = ["фильм", "сериал", "tmdb", "imdb", "youtube", "подборка", "расписан"].find((w) => t.includes(w));
+      const hit = ["фильм", "сериал", "tmdb", "imdb", "youtube", "подборка", "расписан", "папк", "стримеры", "ночная нарезка", "ключи twitch"].find((w) => t.includes(w));
       if (hit) fail(`${where}: на экране есть «${hit}»`);
     };
     const toastHas = (txt, timeout = 15000) => page.waitForFunction((x) => { const t = document.querySelector("#toast"); return !t.hidden && t.innerText.includes(x); }, txt, { timeout });
+    const draft = () => page.evaluate(() => JSON.parse(localStorage.getItem("draft") || "{}"));
 
-    // первый запуск: три вкладки, открыт «Клип»
+    // первый запуск: две вкладки и одна кнопка «Загрузить видео»
     await page.goto(BASE + "/auth?k=testtoken");
-    await page.waitForSelector("#srcSel");
+    await page.waitForSelector("#pickV");
     const tabs = await page.$$eval("#nav a", (a) => a.filter((x) => !x.hidden && x.offsetParent).map((x) => x.innerText.trim()));
-    if (tabs.join(",") !== "Стримеры,Клип,Настройки") fail("вкладки: " + tabs);
+    if (tabs.join(",") !== "Клип,Настройки") fail("вкладки: " + tabs);
+    if ((await page.$$("select, .item[data-path]")).length) fail("на пустом «Клипе» есть списки");
+    if (!(await page.innerText("#pickV")).includes("Загрузить видео")) fail("нет кнопки «Загрузить видео»");
     await noJunk("первый запуск");
     await check(page, "a01_klip_pusto");
-    step("в приложении три вкладки: Стримеры, Клип, Настройки; нигде нет фильмов, сериалов, TMDB");
+    step("в приложении две вкладки: Клип, Настройки; на «Клипе» — одна кнопка «📂 Загрузить видео», без списков и папок");
 
-    // стример: имя, Twitch-логин, папка записей, рамка вебкамеры
-    await page.click('#nav a[data-tab="streamers"]');
-    await page.waitForSelector("text=Добавить стримера");
-    await page.click("text=Добавить стримера");
-    await page.waitForSelector("#bFolder");
-    await page.fill("#sT", "Стример Вася");
-    await page.fill("#sTw", "vasya_live");
-    await page.click("#bFolder");
-    await page.waitForFunction(() => document.querySelector("#sFname").textContent === "streamer");
-    await noJunk("новый стример");
-    await check(page, "a02_novyi_strimer", true);
-    await page.click("#bSave");
-    await page.waitForSelector("h1:has-text('Рамка вебкамеры')");
-    await page.waitForFunction(() => document.querySelector("#fimg").naturalWidth > 0);
-    await check(page, "a03_ramka", true);
-    await page.click("text=Сохранить рамку");
-    await page.waitForSelector("text=twitch.tv/vasya_live");
-    if (!(await page.innerText("#app")).includes("рамка задана")) fail("рамка вебкамеры не сохранилась");
-    await check(page, "a04_strimery", true);
-    step("«Стримеры»: имя, Twitch-логин, папка записей → «Рамка вебкамеры» → карточка «рамка задана», ссылка на Twitch");
+    // подпись к клипам — в «Настройках»; там нет ночной нарезки и ключей
+    await page.click('#nav a[data-tab="settings"]');
+    await page.waitForSelector("#cpName");
+    await page.fill("#cpName", "Стример Вася");
+    await page.fill("#cpLogin", "https://www.twitch.tv/Vasya_Live");
+    await page.click("#bCap");
+    await toastHas("Подпись сохранена");
+    await page.waitForFunction(() => document.querySelector("#cpLogin") && document.querySelector("#cpLogin").value === "vasya_live");
+    await noJunk("«Настройки»");
+    await check(page, "a02_nastroyki", true);
+    step("«Настройки» → «Подпись к клипам»: имя и Twitch-логин (из ссылки — «vasya_live»); ночной нарезки и ключей нет");
 
-    // клип из записи: моменты по чату, «экран + вебкамера», баннер, шаблон
+    // загрузить видео → рамки вебкамеры и экрана находятся сами
     await page.click('#nav a[data-tab="clip"]');
-    await page.waitForSelector("#srcSel");
-    await page.selectOption("#srcSel", { label: "Стример Вася" });
-    await page.waitForSelector(".item[data-path]");
-    if (!(await page.innerText("#fileBox")).includes("есть чат")) fail("запись с чатом не отмечена");
-    await page.click(".item[data-path] >> nth=0");
-    await page.waitForSelector("#bMom");
-    if ((await page.inputValue("#oLayout")) !== "split") fail("раскладка стримера должна быть «экран + вебкамера»");
+    await page.waitForSelector("#pickV");
+    await page.click("#pickV");
+    await page.waitForSelector("#frameMsg", { timeout: 60000 });
+    const fm = await page.innerText("#frameMsg");
+    if (!fm.includes("найдена автоматически")) fail("вебкамера не найдена: " + fm);
+    const d1 = await draft();
+    const cam = d1.rects && d1.rects.cam;
+    if (d1.layout !== "split" || !cam || cam[0] < 0.6 || cam[1] < 0.55 || cam[0] + cam[2] < 0.95) fail("рамка вебкамеры: " + JSON.stringify(d1.rects));
+    const scr = d1.rects.screen;
+    const ov = Math.max(0, Math.min(scr[0] + scr[2], cam[0] + cam[2]) - Math.max(scr[0], cam[0])) * Math.max(0, Math.min(scr[1] + scr[3], cam[1] + cam[3]) - Math.max(scr[1], cam[1]));
+    if (ov / (cam[2] * cam[3]) > 0.15) fail("экран захватывает вебкамеру: " + JSON.stringify(d1.rects));
+    await page.waitForFunction(() => { const c = document.querySelector("#fr916"); if (!c) return false;
+      const p = c.getContext("2d").getImageData(135, 400, 1, 1).data; return p[0] + p[1] + p[2] > 0 && !(p[0] === 34 && p[1] === 34 && p[2] === 34); });
+    if (!(await page.innerText("#fileBox")).includes("stream_2026-10-28.mp4")) fail("имя видео не показано");
+    await noJunk("«Клип» с видео");
+    await check(page, "a03_video_ramki", true);
+    step("«Загрузить видео» → вебкамера справа снизу найдена сама, экран подрезан без неё, схема 9:16 нарисована");
+
+    // файл чата → моменты по реакции зрителей
+    const comments = [];
+    for (let t = 0; t < 40; t += 3) comments.push({ content_offset_seconds: t, commenter: { display_name: "z" }, message: { body: "привет" } });
+    for (let i = 0; i < 25; i++) comments.push({ content_offset_seconds: 25 + i * 0.1, commenter: { display_name: "z" + i }, message: { body: "KEKW ахаха" } });
+    fs.writeFileSync(chatPath, JSON.stringify({ video: { title: "Эфир" }, comments }));
+    await page.click("#chatAdd");
+    await toastHas("Чат добавлен");
+    await page.waitForFunction(() => document.querySelector("#fileBox").innerText.includes("Чат: stream_2026-10-28.json"));
     await page.click("#bMom");
     await page.waitForSelector(".cand", { timeout: 60000 });
     const mr = await page.innerText("#momRes");
     if (!mr.includes("По активности чата") || !mr.includes("KEKW")) fail("моменты по чату: " + mr.slice(0, 300));
     await page.click(".cand >> nth=0");
     if ((await page.inputValue("#tStart")) !== "0:10.0") fail("момент по чату не с той секунды: " + (await page.inputValue("#tStart")));
-    step("«Клип» → Стример Вася → запись «есть чат» → «Автоподбор»: всплеск «KEKW», начало 0:10; раскладка «экран + вебкамера»");
+    step("«Добавить» файл чата → «Автоподбор моментов»: всплеск «KEKW», начало 0:10");
+
+    // ручная настройка рамок
+    await page.click("#bFrame");
+    await page.waitForSelector("h1:has-text('Рамки: экран и вебкамера')");
+    await page.waitForFunction(() => document.querySelector("#fimg").naturalWidth > 0);
+    const box = await page.$eval("#rCam", (e) => { const r = e.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; });
+    await page.mouse.move(box.x, box.y); await page.mouse.down(); await page.mouse.move(box.x - 12, box.y - 6, { steps: 4 }); await page.mouse.up();
+    await check(page, "a04_ramki_redaktor", true);
+    await page.click("#bAuto");
+    await toastHas("Нашёл");
+    await page.click("#bSave");
+    await page.waitForSelector("#frameMsg", { timeout: 30000 });
+    if (!(await page.innerText("#frameMsg")).includes("заданы вручную")) fail("ручные рамки не сохранились");
+    step("«Настроить рамки» → редактор (тянуть пальцем, «Найти автоматически») → «Готово» → «Рамки заданы вручную»");
+
+    // баннер, шаблон, клип: «экран + вебкамера» с рамками этого видео, подпись из «Настроек»
     await page.click("#bnPick");
     await page.waitForSelector("#bnImg");
     await page.click('#bnPos button[data-v="top"]');
-    await noJunk("«Клип» с записью");
-    await check(page, "a05_klip_zapis", true);
     await page.click("#bTpl");
     await toastHas("Шаблон сохранён");
+    await check(page, "a05_klip_nastroen", true);
     await page.click("#bMake");
     await page.waitForSelector("#jobsBox .progress", { timeout: 15000 });
     const jobs = await page.evaluate(() => fetch("/api/jobs").then((r) => r.json()));
     const cj = jobs.find((j) => j.type === "clip");
-    if (!cj || cj.params.layout !== "split" || cj.params.banner_pos !== "top" || cj.params.source_id !== "strimer_vasya") fail("параметры клипа: " + JSON.stringify(cj && cj.params));
+    if (!cj || cj.params.layout !== "split" || !Array.isArray(cj.params.cam_rect) || !Array.isArray(cj.params.screen_rect)
+      || cj.params.banner_pos !== "top" || cj.params.source_id) fail("параметры клипа: " + JSON.stringify(cj && cj.params));
     await page.waitForSelector("#bShare", { timeout: 120000 });
     const cap = await page.innerText("#app");
     if (!cap.includes("Стример Вася · эфир 28.10") || !cap.includes("#vasya_live") || !cap.includes("#твич")) fail("подпись: " + cap.slice(0, 400));
@@ -141,9 +174,9 @@ async function check(page, name, full = false) {
     const calls = await page.evaluate(() => window.__calls);
     if (!calls.some((c) => c.startsWith("share:"))) fail("«Поделиться» не вызвано: " + calls);
     await check(page, "a06_gotovyi_klip", true);
-    step("«Сделать клип» → готовый клип с подписью «Стример Вася · эфир 28.10 #vasya_live #твич …» → «Поделиться»");
+    step("«Сделать клип» → «экран + вебкамера» по рамкам видео, баннер сверху → подпись «Стример Вася · эфир 28.10 #vasya_live #твич» → «Поделиться»");
 
-    // «Быстрый клип» с рамкой стримера
+    // «Быстрый клип» — с теми же рамками
     await page.click('#nav a[data-tab="clip"]');
     await page.waitForSelector("#bQuick");
     await page.click("#bQuick");
@@ -151,56 +184,26 @@ async function check(page, name, full = false) {
     const jobs2 = await page.evaluate(() => fetch("/api/jobs").then((r) => r.json()));
     const auto = jobs2.find((j) => j.type === "auto" && j.status === "done");
     const qc = auto && jobs2.find((j) => j.id === auto.result.clip_jobs[0]);
-    if (!qc || qc.params.source_id !== "strimer_vasya" || qc.params.banner_pos !== "top") fail("быстрый клип: " + JSON.stringify(qc && qc.params));
-    step("«⚡ Быстрый клип»: лучший момент → клип по шаблону с баннером и вебкамерой стримера");
+    if (!qc || qc.params.layout !== "split" || !Array.isArray(qc.params.cam_rect) || qc.params.banner_pos !== "top") fail("быстрый клип: " + JSON.stringify(qc && qc.params));
+    step("«⚡ Быстрый клип»: лучший момент → клип по шаблону с баннером и рамками вебкамеры этого видео");
 
-    // ночная нарезка по папкам стримеров
-    await page.click('#nav a[data-tab="settings"]');
-    await page.waitForSelector("#ngNow");
-    await noJunk("«Настройки»");
-    await page.check("#ngOn");
-    await page.fill("#ngN", "2");
-    await page.click("#ngSave");
-    await toastHas("включена");
-    await check(page, "a07_nastroyki", true);
-    await page.click("#ngNow");
-    await page.waitForSelector("#readyBox");
-    await page.waitForFunction(() => document.querySelector("#readyBox") && document.querySelector("#readyBox").innerText.includes("нарезан ночью")
-      && !document.querySelector("#jobsBox .progress"), null, { timeout: 180000 });
-    await check(page, "a08_gotovye_klipy", true);
-    step("ночная нарезка: самая свежая запись стримера → клипы с пометкой 🌙 в «Готовых клипах»");
+    // другое видео без вебкамеры → один кадр; готовые клипы внизу «Клипа»
+    await page.click('#nav a[data-tab="clip"]');
+    await page.waitForSelector("#chgFile");
+    await page.click("#chgFile");
+    await page.waitForFunction(() => document.querySelector("#fileBox").innerText.includes("matrix.mp4"));
+    await page.waitForSelector("#frameMsg", { timeout: 60000 });
+    const fm2 = await page.innerText("#frameMsg");
+    if (!fm2.includes("Вебкамеры не видно") || (await draft()).layout !== "single") fail("видео без вебкамеры: " + fm2);
+    await page.waitForFunction(() => document.querySelector("#readyBox") && document.querySelector("#readyBox").innerText.includes("Готовые клипы"));
+    await check(page, "a07_bez_kamery", true);
+    step("«Другое видео» без вебкамеры → «Вебкамеры не видно — клип будет одним кадром»; ниже — «Готовые клипы»");
 
-    // ключи Twitch → «Эфиры и клипы зрителей» → «Резать» → запись из папки стримера
-    await page.click('#nav a[data-tab="settings"]');
-    await page.waitForSelector("#bTwKeys");
-    await page.fill("#kTwId", "abc123clientid");
-    await page.fill("#kTwSec", "secretsecret999");
-    await page.click("#bTwKeys");
-    await page.waitForFunction(() => (document.querySelector("#kTwSec") || {}).placeholder?.includes("…t999"));
-    if ((await page.content()).includes("secretsecret999")) fail("ключ показан целиком");
-    step("ключи Twitch сохранены, в интерфейсе видны только последние символы");
-    await page.click('#nav a[data-tab="streamers"]');
-    await page.click("text=Эфиры и клипы зрителей");
-    await page.waitForSelector(".mom");
-    const tw = await page.innerText("#twBox");
-    if (!tw.includes("Вася испугался скримера") || !tw.includes("клипов: 2")) fail("клипы зрителей: " + tw.slice(0, 300));
-    await noJunk("«Эфиры и клипы»");
-    await check(page, "a09_efiry_klipy", true);
-    await page.click('[data-cut="0:0:0"]');
-    await page.waitForSelector(".sheet");
-    if (!(await page.innerText(".sheet")).includes("похоже, это она")) fail("запись с датой эфира не подсказана");
-    await page.click(".sheet [data-i='0']");
-    await page.waitForSelector("#pv");
-    if ((await page.inputValue("#tStart")) !== "0:09.0") fail("момент клипа зрителей не с той секунды: " + (await page.inputValue("#tStart")));
-    step("«Эфиры и клипы зрителей» (Twitch по ключам) → «Резать» → запись эфира по дате → клип открыт с 0:09");
-
-    // видео с телефона
-    await page.selectOption("#srcSel", "");
-    await page.waitForSelector("#pickV");
-    await page.click("#pickV");
-    await page.waitForSelector("#pv");
-    if (!(await page.innerText("#fileBox")).includes("old_rip.mp4")) fail("выбранное видео не показано");
-    step("«Видео с телефона» → «Выбрать видео на телефоне» → видео открыто");
+    // старые адреса (стримеры, папки) ведут в «Клип»
+    await page.goto(BASE + "/#/streamers");
+    await page.waitForSelector("#fileBox");
+    if (!page.url().endsWith("#/clip")) fail("старый адрес не перенаправлен: " + page.url());
+    step("старые экраны «Стримеры»/папки недоступны — открывается «Клип»");
 
     if (report.errors.length) fail("ошибки в консоли: " + report.errors.join(" | "));
     report.ok = true;

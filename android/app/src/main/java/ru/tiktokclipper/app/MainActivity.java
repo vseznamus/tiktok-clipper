@@ -24,7 +24,8 @@ import org.json.JSONObject;
 
 /** Главный экран: тот же интерфейс, что у веб-версии, внутри WebView + мост к системным окнам Android. */
 public class MainActivity extends Activity {
-    private static final int REQ_FOLDER = 1, REQ_VIDEO = 2, REQ_IMAGE = 3;
+    private static final int REQ_FOLDER = 1, REQ_VIDEO = 2, REQ_IMAGE = 3, REQ_CHAT = 4;
+    private volatile String chatFor; // к какому видео выбирается файл чата
     private WebView web;
     private Engine engine;
 
@@ -129,6 +130,9 @@ public class MainActivity extends Activity {
             } else if (req == REQ_IMAGE) {
                 String id = engine.platform.registerImage(uri);
                 js("window.onImagePicked && window.onImagePicked(" + JSONObject.quote(id) + ")");
+            } else if (req == REQ_CHAT && chatFor != null) {
+                String name = engine.platform.registerChat(chatFor, uri);
+                js("window.onChatPicked && window.onChatPicked(" + JSONObject.quote(name) + ")");
             }
         } catch (Exception e) {
             Toast.makeText(this, "Не получилось: " + e.getMessage(), Toast.LENGTH_LONG).show();
@@ -175,6 +179,24 @@ public class MainActivity extends Activity {
                 i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
                 startActivityForResult(i, REQ_VIDEO);
             });
+        }
+
+        /** Файл чата записи (TwitchDownloader .json, .txt, .json.gz) к выбранному видео — моменты по реакции зрителей. */
+        @JavascriptInterface
+        public void pickChat(String videoId) {
+            chatFor = videoId;
+            runOnUiThread(() -> {
+                Intent i = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+                i.addCategory(Intent.CATEGORY_OPENABLE);
+                i.setType("*/*");
+                i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
+                startActivityForResult(i, REQ_CHAT);
+            });
+        }
+
+        @JavascriptInterface
+        public void dropChat(String videoId) {
+            engine.platform.dropChat(videoId);
         }
 
         @JavascriptInterface

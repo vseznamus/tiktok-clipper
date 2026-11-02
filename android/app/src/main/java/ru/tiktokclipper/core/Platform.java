@@ -24,6 +24,9 @@ public interface Platform {
 
     JSONObject faceDetect(String fileId, double t) throws Exception;
 
+    /** Автоподбор рамок вебкамеры и экрана по кадрам видео: {ok, layout, cam_rect, screen_rect, how}. См. {@link Layout}. */
+    JSONObject detectLayout(String fileId) throws Exception;
+
     MiniHttp.RangeSource openClip(JSONObject meta) throws Exception;
 
     boolean clipExists(JSONObject meta);

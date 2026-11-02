@@ -50,9 +50,9 @@ public final class Engine {
         queue = new JobQueue(store.jobsFile(), h);
         api = new Api(store, platform, queue, token);
         jobs.api = api;
-        // ночная нарезка: перепланировать при каждом сохранении настроек
-        api.settingsChanged = () -> NightJobService.sync(ctx, store.settings());
-        NightJobService.sync(ctx, store.settings());
+        // ночная нарезка брала записи из папок стримеров; теперь источник — одно видео с телефона,
+        // поэтому ранее запланированную задачу снимаем (пустые настройки = «выключена»)
+        NightJobService.sync(ctx, new org.json.JSONObject());
         http = new MiniHttp(api);
         int p;
         try {

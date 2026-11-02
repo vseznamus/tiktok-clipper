@@ -77,7 +77,7 @@ async function pollJob(id, onUpdate) {
 function bar(frac) { return `<div class="progress"><i style="width:${Math.round((frac || 0) * 100)}%"></i></div>`; }
 
 // ------------------------------------------------------------------ роутер
-const routes = { streamers: viewStreamers, twitch: viewTwitch, today: viewToday, clip: viewClip, cam: viewCam, queue: viewQueue, clips: viewClips,
+const routes = { streamers: viewStreamers, twitch: viewTwitch, today: viewToday, clip: viewClip, cam: viewCam, frame: viewFrame, queue: viewQueue, clips: viewClips,
   clipview: viewClipView, settings: viewSettings, source: viewSource };
 
 function parseHash() {
@@ -90,11 +90,10 @@ async function route() {
   S.timers.forEach(clearInterval); S.timers = [];
   S.seq = (S.seq || 0) + 1;
   const r = parseHash();
-  // в приложении только «Подборка», «Клип», «Настройки»; старые адреса ведут туда
-  // в приложении — «Стримеры», «Клип», «Настройки»; старые адреса ведут туда
-  if (APP && { today: 1, discover: 1, ru: 1, pick: 1, queue: 1, clips: 1 }[r.name]) { location.replace("#/clip"); return; }
+  // в приложении — «Клип» (одно видео с телефона) и «Настройки»; старые адреса (стримеры, папки) ведут в «Клип»
+  if (APP && { today: 1, discover: 1, ru: 1, pick: 1, queue: 1, clips: 1, streamers: 1, twitch: 1, source: 1, cam: 1 }[r.name]) { location.replace("#/clip"); return; }
   const fn = routes[r.name] || (APP ? viewClip : viewToday);
-  const tab = { cam: APP ? "streamers" : "clip", clipview: APP ? "clip" : "clips", source: APP ? "streamers" : "settings", twitch: "streamers" }[r.name] || r.name;
+  const tab = { cam: "clip", frame: "clip", clipview: APP ? "clip" : "clips", source: "settings" }[r.name] || r.name;
   $$("#nav a").forEach((a) => a.classList.toggle("on", a.dataset.tab === tab));
   try { await fn(r.arg, r.q); } catch (e) {
     if (e.message !== "auth") {
@@ -203,16 +202,13 @@ async function viewClip(_arg, q) {
     dr.start = Number(q.get("start")) || 0; dr.end = Number(q.get("end")) || null; S.moments = {};
     history.replaceState(null, "", "#/clip");
   }
-  if (dr.source_id === undefined) dr.source_id = S.cfg.sources[0] ? S.cfg.sources[0].id : "";
-  if (APP && dr.source_id && !S.cfg.sources.some((x) => x.id === dr.source_id)) { dr.source_id = ""; dr.file = null; }
+  if (dr.source_id === undefined) dr.source_id = APP ? "" : S.cfg.sources[0] ? S.cfg.sources[0].id : "";
+  // в приложении источник — только видео, выбранное на телефоне (без стримеров и папок)
+  if (APP) { if (dr.source_id) dr.file = null; dr.source_id = ""; if (dr.file && !dr.file.startsWith("_picked/")) dr.file = null; }
   saveDraft();
   const opts = S.cfg.sources.map((s) => `<option value="${esc(s.id)}" ${s.id === dr.source_id ? "selected" : ""}>${esc(s.title)}${APP ? "" : ` (${esc(typeName(s.type))})`}</option>`).join("");
   app.innerHTML = APP ? `<h1>Клип</h1><div id="jobsBox"></div>
-  <div class="card"><h2>Запись</h2>
-    ${S.cfg.sources.length ? "" : `<p class="muted small">Добавьте стримера на вкладке «Стримеры» — здесь появятся его записи. Или выберите видео с телефона.</p>`}
-    <label class="f" for="srcSel">Стример</label>
-    <select id="srcSel">${opts}<option value="" ${dr.source_id ? "" : "selected"}>Видео с телефона</option></select>
-    <div id="fileBox"></div></div>
+  <div class="card stack" id="fileBox"></div>
   <div id="momentBox"></div><div id="readyBox"></div>`
     : `<h1>Выбор момента</h1>
   <div class="card"><label class="f" for="srcSel">Источник</label>
@@ -225,6 +221,7 @@ async function viewClip(_arg, q) {
   if (dr.file) await renderMoment();
 
   async function renderFiles() {
+    if (APP) return renderVideoApp();
     const box = $("#fileBox");
     const data = await api("/api/files?source=" + encodeURIComponent(dr.source_id || ""));
     let suggested = null;
@@ -278,6 +275,46 @@ async function viewClip(_arg, q) {
     } else {
       $("#up").onchange = (e) => upload(e.target.files[0]);
     }
+  }
+
+  // приложение: одна кнопка «Загрузить видео», к видео можно приложить файл чата
+  async function renderVideoApp() {
+    const box = $("#fileBox");
+    window.onVideoPicked = async (path) => {
+      dr.file = path; dr.start = 0; dr.end = null; S.moments = {}; saveDraft();
+      history.replaceState(null, "", "#/clip");
+      await renderVideoApp(); await renderMoment();
+    };
+    if (!dr.file) {
+      box.innerHTML = `<h2>Видео</h2>
+        <p class="muted">Запись эфира или любое видео с телефона. Рамки вебкамеры и экрана приложение найдёт само.</p>
+        <button class="btn primary" id="pickV">📂 Загрузить видео</button>`;
+      $("#pickV").onclick = () => window.AndroidApp.pickVideo();
+      return;
+    }
+    let info = {};
+    try { info = await api("/api/probe?file=" + encodeURIComponent(dr.file)); } catch (e) { dr.file = null; saveDraft(); return renderVideoApp(); }
+    box.innerHTML = `<h2>Видео</h2>
+      <div class="row"><b class="grow wrap">${esc(dr.file.split("/").pop())}</b>
+        <button class="btn sm ghost" id="chgFile" style="width:auto">Другое видео</button></div>
+      <button class="btn primary" id="bQuick">⚡ Быстрый клип</button>
+      <p class="muted small">Сам найдёт лучший момент и соберёт клип по шаблону. Или настройте всё вручную ниже.</p>
+      <div class="row"><span class="grow small wrap">${info.has_chat ? `💬 Чат: <b>${esc(info.chat_name || "есть")}</b>` : "💬 Файл чата записи — необязательно"}</span>
+        ${info.has_chat ? `<button class="btn sm ghost" id="chatDel" style="width:auto">Убрать</button>` : `<button class="btn sm" id="chatAdd" style="width:auto">Добавить</button>`}</div>
+      ${info.has_chat ? "" : `<p class="muted small">С чатом (.json TwitchDownloader, .txt) моменты ищутся по реакции зрителей, без него — по звуку.</p>`}`;
+    $("#chgFile").onclick = () => window.AndroidApp.pickVideo();
+    window.onChatPicked = async () => { S.moments = {}; toast("Чат добавлен — «Автоподбор моментов» найдёт всплески"); await renderVideoApp(); await renderMoment(); };
+    const ca = $("#chatAdd"); if (ca) ca.onclick = () => window.AndroidApp.pickChat(dr.file);
+    const cd = $("#chatDel"); if (cd) cd.onclick = async () => { window.AndroidApp.dropChat(dr.file); S.moments = {}; await renderVideoApp(); await renderMoment(); };
+    $("#bQuick").onclick = async () => {
+      const q = $("#bQuick"); q.disabled = true;
+      const params = { file: dr.file, count: 1, source_id: "" };
+      if (dr.layout === "split" && dr.rects && dr.rects.cam) Object.assign(params, { layout: "split", cam_rect: dr.rects.cam, screen_rect: dr.rects.screen });
+      else params.layout = "single";
+      const job = await api("/api/jobs", { method: "POST", body: { type: "auto", params } }).catch(() => null);
+      if (!job) { q.disabled = false; return; }
+      S.watchAuto = job.id; toast("Ищу лучший момент и собираю клип — прогресс вверху"); appJobs(); window.scrollTo(0, 0);
+    };
   }
 
   function upload(file) {
@@ -334,12 +371,12 @@ async function viewClip(_arg, q) {
       <button class="btn" id="playSeg">▶ Проиграть отрезок</button>
     </div>
     <div class="card stack"><button class="btn" id="bMom">${APP ? "Автоподбор моментов" : "Предложить моменты"}</button>
-      ${APP ? (info.has_chat ? `<p class="ok small">Рядом с записью есть файл чата — моменты найду по реакции зрителей (всплески KEKW, «ахах»…).</p>`
-        : `<p class="muted small">Найду самые яркие места по звуку: крики, смех, эмоциональная речь. Положите рядом с записью файл чата — найду по реакции зрителей.</p>`) : ""}
+      ${APP ? (info.has_chat ? `<p class="ok small">Есть файл чата — моменты найду по реакции зрителей (всплески KEKW, «ахах»…).</p>`
+        : `<p class="muted small">Найду самые яркие места по звуку: крики, смех, эмоциональная речь. Добавьте файл чата (вверху) — найду по реакции зрителей.</p>`) : ""}
       <div id="momRes"></div></div>
     <div class="card">
       <h2>Настройки клипа</h2>
-      ${APP ? `<p class="muted small">Значения берутся из шаблона. «Сохранить как шаблон» — и «Быстрый клип» и ночная нарезка будут собирать так же (вместе с баннером).</p>` : ""}
+      ${APP ? `<p class="muted small">Значения берутся из шаблона. «Сохранить как шаблон» — и «⚡ Быстрый клип» будет собирать так же (вместе с баннером).</p>` : ""}
       <label class="toggle"><span>Зеркало (отразить картинку)</span><input type="checkbox" id="oMirror" ${dr.mirror ? "checked" : ""}></label>
       <label class="toggle"><span>Субтитры</span><input type="checkbox" id="oSubs" ${dr.subtitles ? "checked" : ""}></label>
       <div id="subOpts">
@@ -347,11 +384,12 @@ async function viewClip(_arg, q) {
         <label class="f" for="oLang">Язык речи</label><select id="oLang">${langs.map(([v, n]) => `<option value="${v}" ${dr.language === v ? "selected" : ""}>${n}</option>`).join("")}</select>
         <label class="f" for="oStyle">Стиль субтитров</label><select id="oStyle">${styles.map(([v, n]) => `<option value="${v}" ${dr.sub_style === v ? "selected" : ""}>${esc(n)}</option>`).join("")}</select>
       </div>
-      ${`<label class="f" for="oLayout">Раскладка</label>
-      <select id="oLayout"><option value="single" ${dr.layout === "single" ? "selected" : ""}>${APP ? "Один кадр по центру" : "Один кадр по центру (фильм, сериал)"}</option>
+      ${APP ? "" : `<label class="f" for="oLayout">Раскладка</label>
+      <select id="oLayout"><option value="single" ${dr.layout === "single" ? "selected" : ""}>Один кадр по центру (фильм, сериал)</option>
         <option value="split" ${dr.layout === "split" ? "selected" : ""}>Экран сверху + вебкамера снизу</option></select>
       <div id="camInfo" class="stack" style="margin-top:10px"></div>`}
     </div>
+    ${APP ? `<div class="card stack" id="frameCard"><h2>Кадр: экран и вебкамера</h2><div id="frameBody"><p class="muted">Ищу вебкамеру…</p></div></div>` : ""}
     ${APP ? bannerCard(dr) : ""}
     ${APP ? `<button class="btn" id="bTpl">Сохранить как шаблон</button><div style="height:10px"></div>` : ""}
     <button class="btn primary" id="bMake">Сделать клип</button>`;
@@ -439,12 +477,17 @@ async function viewClip(_arg, q) {
       el.innerHTML = `<p class="${camOk ? "ok" : "warn"}">${camOk ? "Рамка вебкамеры задана." : "Рамка вебкамеры не задана — клип получится в режиме «один кадр»."}</p>
         <a class="btn" href="#/cam/${encodeURIComponent(src.id)}?file=${encodeURIComponent(dr.file)}&t=${dr.start}">Проверить рамку вебкамеры</a>`;
     };
-    $("#oLayout").onchange = (e) => { dr.layout = e.target.value; saveDraft(); camVis(); };
+    if ($("#oLayout")) $("#oLayout").onchange = (e) => { dr.layout = e.target.value; saveDraft(); camVis(); };
     subVis(); camVis();
+    if (APP) frameCard(dr);
 
     $("#bMake").onclick = async () => {
       const params = { source_id: dr.source_id || null, file: dr.file, start: dr.start, end: dr.end, mirror: dr.mirror,
         subtitles: dr.subtitles, language: dr.language, sub_style: dr.sub_style, layout: dr.layout, sub_source: dr.use_srt ? "srt" : "asr" };
+      if (APP) {
+        if (dr.layout === "split" && dr.rects && dr.rects.cam) Object.assign(params, { cam_rect: dr.rects.cam, screen_rect: dr.rects.screen });
+        else params.layout = "single";
+      }
       if (APP && dr.banner) Object.assign(params, { banner: dr.banner.path, banner_pos: dr.banner.pos, banner_size: dr.banner.size,
         banner_chroma: !!dr.banner.chroma, banner_plate: !!dr.banner.plate });
       const job = await api("/api/jobs", { method: "POST", body: { type: "clip", params } });
@@ -456,7 +499,7 @@ async function viewClip(_arg, q) {
       $("#bTpl").onclick = async () => {
         const template = { mirror: dr.mirror, subtitles: dr.subtitles, sub_style: dr.sub_style, language: dr.language, use_srt: !!dr.use_srt, banner: dr.banner || null };
         await api("/api/settings", { method: "PUT", body: { template } });
-        await loadCfg(true); toast("Шаблон сохранён: так будут собираться «Быстрый клип» и ночная нарезка");
+        await loadCfg(true); toast("Шаблон сохранён: так будет собираться «Быстрый клип»");
       };
     }
   }
@@ -478,25 +521,95 @@ async function viewCam(sid, q) {
   const info = await api("/api/probe?file=" + encodeURIComponent(file));
   const st = await loadStatus();
   const prof = src.full_profile;
-  const rects = { cam: prof.cam_rect ? [...prof.cam_rect] : [0.68, 0.62, 0.3, 0.35], screen: prof.screen_rect ? [...prof.screen_rect] : [0, 0, 1, 1] };
+  await camEditor({
+    title: "Рамка вебкамеры", sub: `${src.title} · ${file.split("/").pop()}`, file, info, prof, face: !!st.opencv,
+    t: Number(q.get("t")) || info.duration * 0.3,
+    rects: { cam: prof.cam_rect ? [...prof.cam_rect] : [0.68, 0.62, 0.3, 0.35], screen: prof.screen_rect ? [...prof.screen_rect] : [0, 0, 1, 1] },
+    saveLabel: "Сохранить рамку",
+    onSave: async (cam, scr) => {
+      await api(`/api/sources/${encodeURIComponent(sid)}/profile`, { method: "PUT", body: { cam_rect: cam, screen_rect: scr, layout: "split" } });
+      await loadCfg(true); S.draft.layout = "split"; saveDraft();
+      toast("Рамка сохранена"); history.back();
+    },
+    onNone: async () => {
+      if (!confirm("Убрать вебкамеру? Клипы этого источника будут в режиме «один кадр».")) return;
+      await api(`/api/sources/${encodeURIComponent(sid)}/profile`, { method: "PUT", body: { cam_rect: null, layout: "single" } });
+      await loadCfg(true); S.draft.layout = "single"; saveDraft(); toast("Вебкамера убрана"); history.back();
+    },
+  });
+}
+
+// приложение: рамки экрана и вебкамеры для выбранного видео (после автоподбора — поправить вручную)
+async function viewFrame() {
+  const seq = S.seq;
+  await loadCfg();
+  const dr = S.draft;
+  if (!dr.file) { location.replace("#/clip"); return; }
+  const info = await api("/api/probe?file=" + encodeURIComponent(dr.file));
+  if (staleSince(seq)) return;
+  const r = dr.rectsFor === dr.file && dr.rects ? dr.rects : {};
+  await camEditor({
+    title: "Рамки: экран и вебкамера", sub: dr.file.split("/").pop(), file: dr.file, info, prof: S.cfg.profile || {}, auto: true,
+    t: Math.min((dr.start || 0) + 1, Math.max(0, info.duration - 0.5)),
+    rects: { cam: r.cam ? [...r.cam] : [0.68, 0.62, 0.3, 0.35], screen: r.screen ? [...r.screen] : [0, 0, 1, 1] },
+    saveLabel: "Готово",
+    onSave: (cam, scr) => {
+      dr.rects = { cam, screen: scr || [0, 0, 1, 1], how: "manual" }; dr.rectsFor = dr.file; dr.layout = "split"; saveDraft();
+      toast("Рамки сохранены — клип будет «экран + вебкамера»"); go("#/clip");
+    },
+    onNone: () => { dr.layout = "single"; saveDraft(); toast("Клип будет одним кадром"); go("#/clip"); },
+  });
+}
+
+/** Схема клипа 9:16: «экран» сверху, «вебкамера» снизу (или один кадр по центру) — как соберёт приложение. */
+function drawPreview916(c, img, rects, prof) {
+  const g = c.getContext("2d"), W = c.width, H = c.height;
+  if (!img.naturalWidth) return;
+  const iw = img.naturalWidth, ih = img.naturalHeight;
+  g.fillStyle = "#222"; g.fillRect(0, 0, W, H);
+  const drawFill = (r, dy, dh) => {
+    let [x, y, w, h] = r.map((v, i) => v * (i % 2 ? ih : iw));
+    const a = W / dh;
+    if (w / h > a) { const nw = h * a; x += (w - nw) / 2; w = nw; } else { const nh = w / a; y += (h - nh) / 2; h = nh; }
+    g.drawImage(img, x, y, w, h, 0, dy, W, dh);
+  };
+  g.fillStyle = "#ffd400"; g.font = "bold 22px sans-serif"; g.textAlign = "center";
+  if (rects && rects.cam) {
+    const hs = prof.split_screen_h || 0.45, hg = prof.split_gap_h || 0.1, hc = prof.split_cam_h || 0.45;
+    drawFill(rects.screen || [0, 0, 1, 1], 0, H * hs);
+    drawFill(rects.cam, H * (hs + hg), H * hc);
+    g.fillStyle = "#ffd400"; g.fillText("СУБТИТРЫ", W * 0.45, H * (hs + hg / 2) + 8);
+  } else {
+    const h = (W * ih) / iw;
+    g.drawImage(img, 0, (H - h) / 2, W, h);
+    g.fillStyle = "#ffd400"; g.fillText("СУБТИТРЫ", W * 0.45, H * 0.68);
+  }
+}
+
+/** Редактор рамок «вебкамера» и «экран» на кадре видео. opts: title, sub, file, info, prof, rects, t, face, auto, saveLabel, onSave, onNone. */
+async function camEditor(opts) {
+  const { file, info, prof, rects } = opts;
   let mode = "cam";
-  let t = Math.min(Number(q.get("t")) || info.duration * 0.3, Math.max(0, info.duration - 0.5));
-  app.innerHTML = `<h1>Рамка вебкамеры</h1>
-  <div class="card stack"><p class="muted small wrap">${esc(src.title)} · ${esc(file.split("/").pop())}</p>
-    <div class="seg"><button id="mCam" class="on">Вебкамера</button><button id="mScr">Экран (необязательно)</button></div>
+  let t = Math.min(opts.t || 0, Math.max(0, info.duration - 0.5));
+  app.innerHTML = `<h1>${esc(opts.title)}</h1>
+  <div class="card stack"><p class="muted small wrap">${esc(opts.sub)}</p>
+    <div class="seg"><button id="mCam" class="on">Вебкамера</button><button id="mScr">Экран</button></div>
     <div class="camwrap" id="cw"><img id="fimg" alt="Кадр из видео">
       <div class="rect screen" id="rScr"><span class="lbl">ЭКРАН</span></div>
       <div class="rect" id="rCam"><span class="lbl">КАМЕРА</span><i class="h tl"></i><i class="h tr"></i><i class="h bl"></i><i class="h br"></i></div></div>
-    <p class="muted small">Потяните рамку пальцем, чтобы передвинуть. Тяните за белые кружки в углах, чтобы изменить размер.</p>
+    <p class="muted small">Потяните рамку пальцем, чтобы передвинуть. Тяните за белые кружки в углах, чтобы изменить размер.
+      «Экран» — часть картинки, которая будет сверху клипа.</p>
     <label class="f" for="ft">Кадр: <span id="ftT">${fmt(t, false)}</span></label>
     <input type="range" id="ft" min="0" max="${Math.max(0, info.duration - 0.5)}" step="1" value="${t}">
-    ${st.opencv ? `<button class="btn" id="bFace">Найти лицо автоматически</button>` : `<p class="muted small">Автопоиск лица недоступен (на этом устройстве нет OpenCV) — задайте рамку вручную.</p>`}
+    ${opts.auto ? `<button class="btn" id="bAuto">Найти автоматически</button>`
+      : opts.face ? `<button class="btn" id="bFace">Найти лицо автоматически</button>`
+      : `<p class="muted small">Автопоиск лица недоступен (на этом устройстве нет OpenCV) — задайте рамку вручную.</p>`}
     <button class="btn sm ghost" id="bFull" hidden>Экран: весь кадр</button>
   </div>
   <div class="card"><h2>Как будет в клипе</h2><canvas id="pv916" class="preview916" width="270" height="480"></canvas></div>
-  <button class="btn primary" id="bSave">Сохранить рамку</button>
+  <button class="btn primary" id="bSave">${esc(opts.saveLabel)}</button>
   <div style="height:10px"></div>
-  <button class="btn danger" id="bNone">Без вебкамеры</button>`;
+  <button class="btn danger" id="bNone">Без вебкамеры (один кадр)</button>`;
 
   const img = $("#fimg"), cw = $("#cw");
   const els = { cam: $("#rCam"), screen: $("#rScr") };
@@ -553,45 +666,68 @@ async function viewCam(sid, q) {
   const end = () => { if (drag) { drag = null; preview(); } };
   cw.addEventListener("pointerup", end); cw.addEventListener("pointercancel", end);
 
-  // схематичный предпросмотр вертикального кадра
-  function preview() {
-    const c = $("#pv916"), g = c.getContext("2d"), W = c.width, H = c.height;
-    if (!img.naturalWidth) return;
-    const iw = img.naturalWidth, ih = img.naturalHeight;
-    const hs = prof.split_screen_h, hg = prof.split_gap_h, hc = prof.split_cam_h;
-    g.fillStyle = "#222"; g.fillRect(0, 0, W, H);
-    const drawFill = (r, dy, dh) => {
-      let [x, y, w, h] = r.map((v, i) => v * (i % 2 ? ih : iw));
-      const a = W / dh;
-      if (w / h > a) { const nw = h * a; x += (w - nw) / 2; w = nw; } else { const nh = w / a; y += (h - nh) / 2; h = nh; }
-      g.drawImage(img, x, y, w, h, 0, dy, W, dh);
-    };
-    drawFill(rects.screen, 0, H * hs);
-    drawFill(rects.cam, H * (hs + hg), H * hc);
-    g.fillStyle = "#ffd400"; g.font = "bold 22px sans-serif"; g.textAlign = "center";
-    g.fillText("СУБТИТРЫ", W * 0.45, H * (hs + hg / 2) + 8);
-  }
+  function preview() { drawPreview916($("#pv916"), img, rects, prof); }
 
+  if ($("#bAuto")) $("#bAuto").onclick = async () => {
+    const b = $("#bAuto"); b.disabled = true; b.textContent = "Ищу вебкамеру…";
+    try {
+      const r = await api("/api/layout", { method: "POST", body: { file } });
+      if (r.cam_rect) { rects.cam = r.cam_rect; rects.screen = r.screen_rect || [0, 0, 1, 1]; setMode("cam"); preview(); toast("Нашёл — проверьте рамки и нажмите «Готово»"); }
+      else toast(r.how === "fullcam" ? "Камера на весь кадр — лучше «Без вебкамеры»" : "Вебкамера не найдена — задайте рамку вручную", true);
+    } finally { if (b.isConnected) { b.disabled = false; b.textContent = "Найти автоматически"; } }
+  };
   if ($("#bFace")) $("#bFace").onclick = async () => {
     const b = $("#bFace"); b.disabled = true; b.textContent = "Ищу лицо…";
     try {
       const r = await api("/api/facedetect", { method: "POST", body: { file, t } });
-      if (r.ok) { rects.cam = r.rect; setMode("cam"); preview(); toast("Лицо найдено — проверьте рамку и нажмите «Сохранить рамку»"); }
+      if (r.ok) { rects.cam = r.rect; setMode("cam"); preview(); toast("Лицо найдено — проверьте рамку и сохраните"); }
       else toast(r.error, true);
     } finally { b.disabled = false; b.textContent = "Найти лицо автоматически"; }
   };
-  $("#bSave").onclick = async () => {
-    const scr = rects.screen.join() === "0,0,1,1" ? null : rects.screen;
-    await api(`/api/sources/${encodeURIComponent(sid)}/profile`, { method: "PUT", body: { cam_rect: rects.cam, screen_rect: scr, layout: "split" } });
-    await loadCfg(true); S.draft.layout = "split"; saveDraft();
-    toast("Рамка сохранена"); if (APP) go("#/streamers"); else history.back();
-  };
-  $("#bNone").onclick = async () => {
-    if (!confirm("Убрать вебкамеру? Клипы этого источника будут в режиме «один кадр».")) return;
-    await api(`/api/sources/${encodeURIComponent(sid)}/profile`, { method: "PUT", body: { cam_rect: null, layout: "single" } });
-    await loadCfg(true); S.draft.layout = "single"; saveDraft(); toast("Вебкамера убрана"); history.back();
-  };
+  $("#bSave").onclick = () => opts.onSave(rects.cam, rects.screen.join() === "0,0,1,1" ? null : rects.screen);
+  $("#bNone").onclick = () => opts.onNone();
   setMode("cam");
+}
+
+// ------------------------------------------------------------------ «Кадр» на экране «Клип» (приложение): автоподбор рамок
+const FRAME_HOW = {
+  frame: ["ok", "✓ Вебкамера найдена автоматически — по её рамке. Проверьте схему ниже."],
+  corner: ["ok", "✓ Вебкамера найдена автоматически — по её рамке. Проверьте схему ниже."],
+  face: ["ok", "✓ Вебкамера найдена по лицу — проверьте рамку."],
+  manual: ["ok", "✓ Рамки заданы вручную."],
+  fullcam: ["muted", "Камера на весь кадр — клип будет одним кадром."],
+  none: ["muted", "Вебкамеры не видно — клип будет одним кадром. Если она есть, нажмите «Настроить рамки»."],
+  off: ["muted", "Выбран «Один кадр»: картинка целиком, без деления на экран и вебкамеру."],
+};
+async function frameCard(dr) {
+  const body = $("#frameBody");
+  if (!body) return;
+  if (dr.rectsFor !== dr.file || !dr.rects) {
+    body.innerHTML = `<p class="muted">Ищу вебкамеру и экран на кадрах видео…</p>`;
+    const file = dr.file;
+    let r;
+    try { r = await api("/api/layout", { method: "POST", body: { file } }); }
+    catch (e) { r = { layout: "single", cam_rect: null, screen_rect: [0, 0, 1, 1], how: "none" }; }
+    if (dr.file !== file || !body.isConnected) return;
+    dr.rects = { cam: r.cam_rect, screen: r.screen_rect || [0, 0, 1, 1], how: r.how }; dr.rectsFor = file; dr.layout = r.layout; saveDraft();
+  }
+  drawFrameCard(dr);
+}
+function drawFrameCard(dr) {
+  const body = $("#frameBody");
+  if (!body) return;
+  const split = dr.layout === "split" && dr.rects && dr.rects.cam;
+  const how = split ? dr.rects.how || "manual" : dr.rects && dr.rects.how === "fullcam" ? "fullcam" : dr.rects && dr.rects.cam ? "off" : "none";
+  const [cls, msg] = FRAME_HOW[how] || FRAME_HOW.none;
+  body.innerHTML = `<p class="${cls}" id="frameMsg">${msg}</p>
+    <canvas id="fr916" class="preview916" width="270" height="480"></canvas>
+    <div class="seg"><button id="lySplit" class="${split ? "on" : ""}">Экран + вебкамера</button><button id="lySingle" class="${split ? "" : "on"}">Один кадр</button></div>
+    <a class="btn" href="#/frame" id="bFrame">Настроить рамки</a>`;
+  const img = new Image();
+  img.onload = () => { const c = $("#fr916"); if (c) drawPreview916(c, img, split ? dr.rects : null, S.cfg.profile || {}); };
+  img.src = `/api/frame?file=${encodeURIComponent(dr.file)}&t=${((dr.start || 0) + 1).toFixed(1)}&w=640`;
+  $("#lySplit").onclick = () => { if (!dr.rects || !dr.rects.cam) { go("#/frame"); return; } dr.layout = "split"; saveDraft(); drawFrameCard(dr); };
+  $("#lySingle").onclick = () => { dr.layout = "single"; saveDraft(); drawFrameCard(dr); };
 }
 
 // ------------------------------------------------------------------ «Очередь»
@@ -770,8 +906,11 @@ async function viewSettings() {
     <label class="f">Порядок типов</label><ul class="list" id="order"></ul>
     <button class="btn primary" id="bSched">Сохранить расписание</button></div>`}
 
-  ${APP ? `<div class="card stack" id="nightCard"><h2>Ночная нарезка</h2><p class="muted pad">Загружаю…</p></div>` : ""}
-  ${APP ? twKeysCard(se) : ""}
+  ${APP ? `<div class="card stack"><h2>Подпись к клипам</h2>
+    <p class="muted small">Попадает в подпись для TikTok, которая копируется при «Поделиться»: «Имя · эфир 28.10» и хэштеги. Можно оставить пустым.</p>
+    <label class="f" for="cpName">Имя стримера</label><input id="cpName" maxlength="60" value="${esc(se.caption_name || "")}" placeholder="Например, Стример Вася">
+    <label class="f" for="cpLogin">Twitch-логин (для хэштега)</label><input id="cpLogin" maxlength="60" autocapitalize="off" value="${esc(se.caption_login || "")}" placeholder="из адреса twitch.tv/логин">
+    <button class="btn primary" id="bCap">Сохранить подпись</button></div>` : ""}
   ${APP ? appAsrCard(st, se) : `  <div class="card"><h2>Распознавание речи</h2>
     <p class="small">faster-whisper: ${asr["faster-whisper"].ok ? '<span class="ok">установлен</span>' : `<span class="muted">${esc(asr["faster-whisper"].message)}</span>`}</p>
     <p class="small">whisper.cpp: ${asr["whisper.cpp"].ok ? `<span class="ok">установлен</span> · модели: ${esc(asr["whisper.cpp"].models.join(", ") || "нет")}` : `<span class="muted">${esc(asr["whisper.cpp"].message)}</span>`}</p>
@@ -824,7 +963,10 @@ async function viewSettings() {
     if (parseHash().name !== "settings") return;
     if (fin.status === "done") { toast("Модель удалена"); viewSettings(); } else { b.disabled = false; toast(fin.error || "Не получилось"); }
   }));
-  if (APP) { nightCard(); bindTwKeys(); }
+  if (APP) $("#bCap").onclick = async () => {
+    await api("/api/settings", { method: "PUT", body: { caption_name: $("#cpName").value, caption_login: $("#cpLogin").value } });
+    await loadCfg(true); toast("Подпись сохранена"); viewSettings();
+  };
   $("#bAsr").onclick = async () => {
     const body = { asr_backend: $("#aB").value, asr_model: $("#aM").value, asr_language: $("#aL").value, moment_len: +$("#mL").value };
     if ($("#vP")) body.x264_preset = $("#vP").value;
@@ -1247,7 +1389,6 @@ async function viewSource(id) {
 // ------------------------------------------------------------------ старт
 if (!APP && "serviceWorker" in navigator && window.isSecureContext) navigator.serviceWorker.register("/sw.js").catch(() => {});
 if (APP) {
-  $('#nav a[data-tab="streamers"]').hidden = false;
-  for (const k of ["today", "queue", "clips"]) $(`#nav a[data-tab="${k}"]`).hidden = true;
+  for (const k of ["streamers", "today", "queue", "clips"]) $(`#nav a[data-tab="${k}"]`).hidden = true;
 }
 route(); refreshBadge();

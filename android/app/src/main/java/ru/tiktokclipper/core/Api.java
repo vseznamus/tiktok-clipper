@@ -20,7 +20,7 @@ import java.util.Locale;
  * другие приложения на телефоне не смогут управлять нарезкой.
  */
 public class Api implements MiniHttp.Handler {
-    public static final String VERSION = "3.1.0-android";
+    public static final String VERSION = "3.2.0-android";
     public static final String COOKIE = "clipper_k";
 
     private final Store store;
@@ -252,6 +252,11 @@ public class Api implements MiniHttp.Handler {
                 JSONObject b = r.json();
                 return MiniHttp.Response.json(platform.faceDetect(b.optString("file"), b.optDouble("t", 0)));
             }
+            case "layout": {
+                String f = r.json().optString("file");
+                if (f.isEmpty()) throw new ApiError(400, "Не выбрано видео");
+                return MiniHttp.Response.json(platform.detectLayout(f));
+            }
             default:
                 break;
         }
@@ -307,6 +312,7 @@ public class Api implements MiniHttp.Handler {
         out.put("type_names", tn);
         out.put("types", new JSONArray(Store.SOURCE_TYPES));
         out.put("models", platform.status().optJSONArray("model_ids"));
+        out.put("profile", Store.defaultProfile()); // доли высоты экрана/камеры в клипе — для предпросмотра рамок
         return out;
     }
 
@@ -362,6 +368,13 @@ public class Api implements MiniHttp.Handler {
                 case "template":
                     patch.put(k, Template.clean(b.optJSONObject(k)));
                     break;
+                case "caption_name":
+                case "caption_login": {
+                    String v = b.optString(k, "").trim();
+                    if (v.length() > 60) throw new ApiError(400, "Слишком длинно для подписи");
+                    patch.put(k, "caption_login".equals(k) ? Discover.twitchLogin(v) : v);
+                    break;
+                }
                 case "night": {
                     JSONObject n = b.optJSONObject(k);
                     if (n == null) throw new ApiError(400, "Неверные настройки ночной нарезки");

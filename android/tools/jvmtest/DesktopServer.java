@@ -37,6 +37,7 @@ public class DesktopServer {
             for (JSONObject c : best) {
                 JSONObject cp = Template.clipParams(Template.of(store.settings()), file, c.getDouble("start"), c.getDouble("end"), pf.sidecarSrt(file) != null);
                 if (!ctx.params.optString("source_id").isEmpty()) cp.put("source_id", ctx.params.getString("source_id"));
+                for (String k : new String[]{"layout", "cam_rect", "screen_rect"}) if (ctx.params.has(k)) cp.put(k, ctx.params.get(k));
                 jobs.put(qa[0].submit("clip", cp, "Клип").getString("id"));
             }
             return new JSONObject().put("clip_jobs", jobs);
@@ -171,7 +172,9 @@ public class DesktopServer {
                 if (s.getString("codec_type").equals("audio")) o.put("has_audio", true);
             }
             o.put("has_srt", sidecarSrt(id) != null);
-            o.put("has_chat", chatFile(f) != null);
+            File chat = chatFile(f);
+            o.put("has_chat", chat != null);
+            if (chat != null && id.startsWith("_picked/")) o.put("chat_name", chat.getName());
             return o;
         }
 
@@ -239,6 +242,28 @@ public class DesktopServer {
 
         public JSONObject faceDetect(String id, double t) throws Exception { return new JSONObject().put("ok", false).put("error", "нет"); }
 
+        /** Та же логика, что в приложении (ядро Layout), кадры — из ffmpeg; лиц здесь не ищем. */
+        public JSONObject detectLayout(String id) throws Exception {
+            File f = resolve(id);
+            JSONObject info = probe(id);
+            double dur = info.getDouble("duration");
+            int sw = info.getInt("width"), shh = info.getInt("height"), w = 320, h = Math.round(320f * shh / sw) / 2 * 2;
+            List<int[]> frames = new ArrayList<>();
+            for (int k = 0; k < 8; k++) {
+                double t = dur * (0.08 + 0.84 * k / 7);
+                File out = File.createTempFile("gray", ".raw");
+                sh("ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-ss", String.valueOf(t), "-i", f.getPath(), "-frames:v", "1",
+                        "-vf", "scale=" + w + ":" + h, "-f", "rawvideo", "-pix_fmt", "rgb24", out.getPath());
+                byte[] b = Files.readAllBytes(out.toPath());
+                out.delete();
+                if (b.length != w * h * 3) continue;
+                int[] px = new int[w * h];
+                for (int i = 0; i < px.length; i++) px[i] = (b[3 * i] & 255) << 16 | (b[3 * i + 1] & 255) << 8 | (b[3 * i + 2] & 255);
+                frames.add(px);
+            }
+            return Layout.detect(frames.toArray(new int[0][]), w, h, new ArrayList<float[]>(), sw, shh).toJson();
+        }
+
         File clipFile(JSONObject m) { return new File(store.dir, "clips/" + m.optString("id") + ".mp4"); }
         public MiniHttp.RangeSource openClip(JSONObject m) { return fileSource(clipFile(m)); }
         public boolean clipExists(JSONObject m) { return clipFile(m).isFile(); }
@@ -268,6 +293,8 @@ public class DesktopServer {
                     .put("filename", "2026-10-30_120000_clip.mp4").put("gallery_path", "Movies/TikTokClips/2026-10-30_120000_clip.mp4")
                     .put("media_uri", "content://media/external/video/media/1").put("caption", store.getSource(p.optString("source_id", "")) != null
                             ? Captions.stream(store.getSource(p.optString("source_id")).optString("title"), store.getSource(p.optString("source_id")).optString("twitch_login"), file)
+                            : !store.settings().optString("caption_name").isEmpty()
+                            ? Captions.stream(store.settings().optString("caption_name"), store.settings().optString("caption_login"), file) // как в ClipJobs
                             : Captions.make(file));
             if (p.optBoolean("night")) meta.put("night", true);
             for (String k : new String[]{"banner", "banner_pos", "banner_size", "banner_chroma", "banner_plate"}) if (p.has(k)) meta.put(k, p.get(k));

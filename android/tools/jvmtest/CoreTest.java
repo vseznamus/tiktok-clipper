@@ -518,6 +518,54 @@ public class CoreTest {
             check(c2.getJSONObject(0).getJSONArray("reasons").toString().contains("быстрый монтаж")
                     && Math.abs(c2.getJSONObject(0).getDouble("start") - 200) <= 30, c2.toString());
         });
+        // ---------------------------------------------------------------- автоподбор рамок вебкамеры и экрана
+        test("рамка вебкамеры в углу: по неподвижным краям, без лица", () -> {
+            int[][] fr = streamFrames(320, 180, new int[]{224, 106, 312, 172}, 0, null);
+            Layout.Result r = Layout.detect(fr, 320, 180, new ArrayList<float[]>(), 1920, 1080);
+            check("corner".equals(r.how), "как найдена: " + r.how);
+            near(r.cam, new float[]{224 / 320f, 106 / 180f, 88 / 320f, 66 / 180f}, 0.015f, "камера");
+            // экран: пропорция верха клипа, вебкамеру не захватывает
+            float aspect = r.screen[2] * 1920 / (r.screen[3] * 1080);
+            check(Math.abs(aspect - Layout.TOP_ASPECT) < 0.02, "пропорция экрана " + aspect);
+            check(r.screen[0] + r.screen[2] <= r.cam[0] + 0.01f, "экран залез на камеру: " + Arrays.toString(r.screen));
+        });
+        test("рамка вокруг лица: камера посреди края, лицо найдено Android", () -> {
+            int[] cam = {120, 100, 216, 172};
+            int[][] fr = streamFrames(320, 180, cam, 0, null);
+            List<float[]> faces = new ArrayList<>();
+            for (int k = 0; k < 4; k++) faces.add(new float[]{(156 + k % 2) / 320f, 112 / 180f, 24 / 320f, 28 / 180f});
+            Layout.Result r = Layout.detect(fr, 320, 180, faces, 1920, 1080);
+            check("frame".equals(r.how), "как найдена: " + r.how + " " + Arrays.toString(r.cam));
+            near(r.cam, new float[]{120 / 320f, 100 / 180f, 96 / 320f, 72 / 180f}, 0.015f, "камера");
+            check(r.toJson().getString("layout").equals("split"), "раскладка");
+        });
+        test("лицо без рамки → прямоугольник вокруг лица; крупное лицо → камера на весь кадр", () -> {
+            int[][] fr = streamFrames(320, 180, null, 0, null);
+            List<float[]> small = new ArrayList<>();
+            small.add(new float[]{0.8f, 0.6f, 0.06f, 0.1f});
+            Layout.Result r = Layout.detect(fr, 320, 180, small, 1920, 1080);
+            check("face".equals(r.how) && r.cam != null, "маленькое лицо: " + r.how);
+            check(r.cam[0] <= 0.8f && r.cam[0] + r.cam[2] >= 0.86f, "лицо внутри рамки " + Arrays.toString(r.cam));
+            List<float[]> big = new ArrayList<>();
+            big.add(new float[]{0.35f, 0.2f, 0.3f, 0.45f});
+            Layout.Result f = Layout.detect(fr, 320, 180, big, 1920, 1080);
+            check("fullcam".equals(f.how) && f.cam == null, "крупное лицо: " + f.how);
+            check(f.toJson().getString("layout").equals("single"), "один кадр");
+        });
+        test("без вебкамеры и неподвижная плашка интерфейса — не камера; чёрные поля убираются из экрана", () -> {
+            int[][] fr = streamFrames(320, 180, null, 20, new int[]{230, 100, 315, 150});
+            Layout.Result r = Layout.detect(fr, 320, 180, new ArrayList<float[]>(), 1920, 1080);
+            check(r.cam == null && "none".equals(r.how), "нашлась несуществующая камера: " + r.how + " " + Arrays.toString(r.cam));
+            near(r.screen, new float[]{0, 20 / 180f, 1, 140 / 180f}, 0.012f, "экран без полей");
+        });
+        test("камера в углу при чёрных полях сверху и снизу", () -> {
+            int[][] fr = streamFrames(320, 180, new int[]{8, 26, 100, 90}, 20, null);
+            Layout.Result r = Layout.detect(fr, 320, 180, new ArrayList<float[]>(), 1920, 1080);
+            check("corner".equals(r.how), "как найдена: " + r.how);
+            near(r.cam, new float[]{8 / 320f, 26 / 180f, 92 / 320f, 64 / 180f}, 0.02f, "камера");
+            check(r.screen[1] >= 20 / 180f - 0.01f && r.screen[0] >= r.cam[0] + r.cam[2] - 0.01f, "экран: " + Arrays.toString(r.screen));
+        });
+
         System.out.println("\nИтого: " + passed + " прошло, " + failed + " упало");
         System.exit(failed == 0 ? 0 : 1);
     }
@@ -614,9 +662,57 @@ public class CoreTest {
             try { return new JSONObject().put("model_ids", new JSONArray()); } catch (Exception e) { throw new RuntimeException(e); }
         }
         public JSONObject faceDetect(String id, double t) { return new JSONObject(); }
+        public JSONObject detectLayout(String id) { return new JSONObject(); }
         public MiniHttp.RangeSource openClip(JSONObject m) { return null; }
         public boolean clipExists(JSONObject m) { return false; }
         public void deleteClip(JSONObject m) { }
         public byte[] asset(String p) { return p.equals("index.html") ? "<html>ok</html>".getBytes() : null; }
     }
+    /** Кадры «эфира»: шумная движущаяся игра, по желанию — вебкамера с белой рамкой, чёрные поля, неподвижная плашка. */
+    static int[][] streamFrames(int w, int h, int[] cam, int bars, int[] hud) {
+        Random rnd = new Random(7);
+        int[][] out = new int[8][];
+        for (int k = 0; k < out.length; k++) {
+            float[] f = new float[w * h];
+            for (int y = 0; y < h; y++) {
+                for (int x = 0; x < w; x++) {
+                    float v = 60 + 50 * (float) Math.sin((x + k * 23) * 0.11) * (float) Math.cos((y - k * 17) * 0.07) + rnd.nextInt(60);
+                    if (y < bars || y >= h - bars) v = 4;
+                    f[y * w + x] = v;
+                }
+            }
+            if (hud != null) box(f, w, hud, 30, 230, false, k, rnd);
+            if (cam != null) box(f, w, cam, 0, 255, true, k, rnd);
+            int[] px = new int[f.length];
+            for (int i = 0; i < f.length; i++) {
+                int v = Math.max(0, Math.min(255, Math.round(f[i])));
+                px[i] = v << 16 | v << 8 | v;
+            }
+            out[k] = px;
+        }
+        return out;
+    }
+
+    /** Прямоугольник [x0,y0,x1,y1) с рамкой в 2 пикселя вокруг (снаружи); внутри — фон и, если moving, «человек», который двигается. */
+    static void box(float[] f, int w, int[] b, float fill, float border, boolean moving, int k, Random rnd) {
+        for (int y = b[1] - 2; y < b[3] + 2; y++)
+            for (int x = b[0] - 2; x < b[2] + 2; x++) {
+                if (x < 0 || y < 0 || x >= w || y * w + x >= f.length) continue;
+                boolean in = x >= b[0] && x < b[2] && y >= b[1] && y < b[3];
+                float v = in ? fill + 20 : border;
+                if (in && moving) {
+                    int cx = (b[0] + b[2]) / 2 + (k % 3 - 1) * 6, cy = (b[1] + b[3]) / 2 + (k % 2) * 4;
+                    if (Math.hypot(x - cx, (y - cy) * 0.8) < (b[3] - b[1]) / 4.0) v = 180 + rnd.nextInt(20);
+                    else v = 40 + rnd.nextInt(8);
+                }
+                f[y * w + x] = v;
+            }
+    }
+
+    static void near(float[] a, float[] b, float tol, String what) {
+        check(a != null, what + ": не найдено");
+        for (int i = 0; i < 4; i++)
+            check(Math.abs(a[i] - b[i]) <= tol, what + ": " + Arrays.toString(a) + " ≠ " + Arrays.toString(b));
+    }
+
 }

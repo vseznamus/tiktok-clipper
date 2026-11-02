@@ -40,6 +40,7 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
 import ru.tiktokclipper.core.ApiError;
+import ru.tiktokclipper.core.Layout;
 import ru.tiktokclipper.core.MiniHttp;
 import ru.tiktokclipper.core.Platform;
 import ru.tiktokclipper.core.Store;
@@ -79,6 +80,23 @@ public class AndroidPlatform implements Platform {
 
     private SharedPreferences pickedImages() {
         return ctx.getSharedPreferences("picked_img", Context.MODE_PRIVATE);
+    }
+
+    /** Файлы чата, привязанные к выбранным видео: id видео → uri чата (и «id|name» → имя файла). */
+    private SharedPreferences pickedChats() {
+        return ctx.getSharedPreferences("picked_chat", Context.MODE_PRIVATE);
+    }
+
+    /** Привязать файл чата к выбранному видео; возвращает имя файла. */
+    public String registerChat(String videoId, Uri uri) {
+        String name = displayName(uri);
+        if (name == null) name = "chat";
+        pickedChats().edit().putString(videoId, uri.toString()).putString(videoId + "|name", name).apply();
+        return name;
+    }
+
+    public void dropChat(String videoId) {
+        pickedChats().edit().remove(videoId).remove(videoId + "|name").apply();
     }
 
     public static final String NIGHT = "_night"; // папка ночной нарезки
@@ -294,7 +312,13 @@ public class AndroidPlatform implements Platform {
         Uri u = resolve(fileId);
         JSONObject o = probeUri(u);
         o.put("has_srt", sidecarSrt(fileId) != null);
-        o.put("has_chat", chatKey(fileId) != null);
+        if (fileId.startsWith(PICKED + "/")) {
+            String cn = pickedChats().getString(fileId + "|name", null);
+            o.put("has_chat", cn != null);
+            if (cn != null) o.put("chat_name", cn);
+        } else {
+            o.put("has_chat", chatKey(fileId) != null);
+        }
         return o;
     }
 
@@ -317,6 +341,10 @@ public class AndroidPlatform implements Platform {
 
     /** Файл чата рядом с видео или null. */
     Uri sidecarChat(String fileId) {
+        if (fileId.startsWith(PICKED + "/")) { // чат, выбранный вручную к этому видео
+            String s = pickedChats().getString(fileId, null);
+            return s == null ? null : Uri.parse(s);
+        }
         if (chatCache.isEmpty()) {
             try {
                 resolve(fileId);
@@ -542,25 +570,8 @@ public class AndroidPlatform implements Platform {
             } catch (Exception e) {
                 continue;
             }
-            Bitmap rgb = b.copy(Bitmap.Config.RGB_565, false);
+            found.addAll(faces(b));
             b.recycle();
-            int w = rgb.getWidth() / 2 * 2, h = rgb.getHeight();
-            if (w != rgb.getWidth()) {
-                Bitmap c = Bitmap.createBitmap(rgb, 0, 0, w, h);
-                rgb.recycle();
-                rgb = c.copy(Bitmap.Config.RGB_565, false);
-            }
-            FaceDetector.Face[] faces = new FaceDetector.Face[4];
-            int n = new FaceDetector(w, h, faces.length).findFaces(rgb, faces);
-            for (int i = 0; i < n; i++) {
-                if (faces[i].confidence() < 0.3f) continue;
-                PointF mid = new PointF();
-                faces[i].getMidPoint(mid);
-                float ed = faces[i].eyesDistance();
-                float fw = ed * 2.2f, fh = ed * 2.8f;
-                found.add(new float[]{(mid.x - fw / 2) / w, (mid.y - fh * 0.4f) / h, fw / w, fh / h});
-            }
-            rgb.recycle();
         }
         JSONObject o = new JSONObject();
         if (found.isEmpty()) {
@@ -589,6 +600,70 @@ public class AndroidPlatform implements Platform {
         o.put("rect", new JSONArray().put(r4(rx)).put(r4(ry)).put(r4(rw)).put(r4(rh)));
         o.put("faces", found.size());
         return o;
+    }
+
+    /** Лица на кадре (android.media.FaceDetector) в долях кадра {x, y, w, h}. Кадр не освобождает. */
+    static List<float[]> faces(Bitmap b) {
+        List<float[]> found = new ArrayList<>();
+        Bitmap rgb = b.copy(Bitmap.Config.RGB_565, false);
+        int w = rgb.getWidth() / 2 * 2, h = rgb.getHeight();
+        if (w != rgb.getWidth()) {
+            Bitmap c = Bitmap.createBitmap(rgb, 0, 0, w, h);
+            rgb.recycle();
+            rgb = c.copy(Bitmap.Config.RGB_565, false);
+            c.recycle();
+        }
+        FaceDetector.Face[] faces = new FaceDetector.Face[4];
+        int n = new FaceDetector(w, h, faces.length).findFaces(rgb, faces);
+        for (int i = 0; i < n; i++) {
+            if (faces[i].confidence() < 0.3f) continue;
+            PointF mid = new PointF();
+            faces[i].getMidPoint(mid);
+            float ed = faces[i].eyesDistance();
+            float fw = ed * 2.2f, fh = ed * 2.8f;
+            found.add(new float[]{(mid.x - fw / 2) / w, (mid.y - fh * 0.4f) / h, fw / w, fh / h});
+        }
+        rgb.recycle();
+        return found;
+    }
+
+    /** Автоподбор рамок: 8 кадров из разных мест записи → неподвижные края и лица → {@link Layout}. */
+    @Override
+    public JSONObject detectLayout(String fileId) throws Exception {
+        Uri u = resolve(fileId);
+        double dur = probeUri(u).optDouble("duration", 0);
+        int n = dur > 20 ? 8 : dur > 4 ? 5 : 3;
+        List<int[]> frames = new ArrayList<>();
+        List<float[]> faces = new ArrayList<>();
+        int aw = 320, ah = 0, srcW = 0, srcH = 0;
+        MediaMetadataRetriever r = new MediaMetadataRetriever();
+        try {
+            r.setDataSource(ctx, u);
+            for (int k = 0; k < n; k++) {
+                double t = dur > 0 ? dur * (0.08 + 0.84 * k / (n - 1)) : 0;
+                Bitmap b = r.getFrameAtTime((long) (t * 1e6), MediaMetadataRetriever.OPTION_CLOSEST_SYNC);
+                if (b == null) continue;
+                if (ah == 0) {
+                    srcW = b.getWidth();
+                    srcH = b.getHeight();
+                    ah = Math.max(8, Math.round(aw * srcH / (float) srcW));
+                }
+                // лица ищем на кадре пошире — так находятся и небольшие вебкамеры
+                Bitmap big = b.getWidth() > 640 ? Bitmap.createScaledBitmap(b, 640, Math.max(2, Math.round(640f * b.getHeight() / b.getWidth())), true) : b;
+                faces.addAll(faces(big));
+                Bitmap s = Bitmap.createScaledBitmap(b, aw, ah, true);
+                int[] px = new int[aw * ah];
+                s.getPixels(px, 0, aw, 0, 0, aw, ah);
+                frames.add(px);
+                if (big != b) big.recycle();
+                if (s != b) s.recycle();
+                b.recycle();
+            }
+        } finally {
+            release(r);
+        }
+        if (frames.size() < 2) throw new ApiError(500, "Не удалось прочитать кадры видео — задайте рамки вручную");
+        return Layout.detect(frames.toArray(new int[0][]), aw, ah, faces, srcW, srcH).toJson();
     }
 
     private static double r4(float v) {
