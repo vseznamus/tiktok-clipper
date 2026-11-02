@@ -20,22 +20,32 @@ KEYBOARD = [["📋 Каналы", "➕ Добавить канал"], ["⏸ Па
 COMMANDS = [
     ("add", "добавить канал: /add логин"), ("del", "убрать канал: /del логин"), ("list", "каналы и их чат"),
     ("login", "войти в Twitch"), ("threshold", "порог всплеска, например /threshold 3"),
-    ("cooldown", "пауза между клипами канала, минут"), ("minmsgs", "минимум сообщений за 15 с"),
+    ("cooldown", "пауза между моментами канала, минут"), ("minmsgs", "минимум сообщений за 15 с"),
     ("pause", "приостановить клипы"), ("resume", "продолжить"), ("status", "состояние"), ("help", "помощь"),
 ]
 HELP = (
-    "Я слежу за чатом каналов Twitch. Когда чат «взрывается» (пишут в разы чаще обычного), делаю клип "
-    "встроенным инструментом Twitch от вашего имени и присылаю ссылку сюда.\n\n"
+    "Я слежу за чатом каналов Twitch. Когда чат «взрывается» (пишут в разы чаще обычного), делаю встроенным "
+    "инструментом Twitch от вашего имени два клипа по минуте — «минута до» и «минута после» момента — "
+    "и присылаю ссылки сюда.\n\n"
     "/add логин — добавить канал (или кнопка «➕ Добавить канал»)\n"
     "/del логин — убрать канал\n"
     "/list — каналы, сколько клипов, темп чата\n"
     "/threshold 3 — во сколько раз чат должен ускориться (1.5–10)\n"
-    "/cooldown 3 — минут между клипами одного канала (1–60)\n"
+    "/cooldown 3 — минут между моментами одного канала (2–60)\n"
     "/minmsgs 15 — минимум сообщений за 15 секунд\n"
     "/pause, /resume — приостановить и продолжить\n"
     "/login — войти в Twitch заново\n"
     "/status — состояние бота"
 )
+
+
+CLIP_LEN = 60  # секунд в клипе — максимум у Twitch
+
+
+def vod_link(video_id: str, sec) -> str:
+    sec = max(0, int(sec or 0))
+    h, m, s = sec // 3600, sec % 3600 // 60, sec % 60
+    return f"https://www.twitch.tv/videos/{video_id}?t=" + (f"{h}h" if h else "") + f"{m}m{s}s"
 
 
 def fmt_time(sec) -> str:
@@ -56,6 +66,7 @@ class ClipBot:
         self.awaiting: str | None = None           # ждём логин после «➕ Добавить канал»
         self.last_error: dict[str, float] = {}     # не засыпать одинаковыми ошибками
         self.tasks: set[asyncio.Task] = set()
+        self.after_delay = float(CLIP_LEN)         # через сколько секунд делать клип «минута после»
         for login in store.channels():
             self.chats[login] = self._new_chat()
             self.chat.channels.add(login)
@@ -89,22 +100,46 @@ class ClipBot:
                 t.add_done_callback(self.tasks.discard)
 
     async def make_clip(self, login: str, sp: Spike) -> None:
+        """Два клипа по минуте подряд: «минута до» — сразу, «минута после» — через минуту.
+        Вместе — непрерывные 2 минуты эфира, момент всплеска на стыке (Twitch не делает клипы длиннее 60 с)."""
         info = self.store.channels().get(login)
         if not info:
             return
         name = info.get("name") or login
         head = f"🔥 {name} — чат ×{str(sp.ratio).replace('.', ',')} ({sp.msgs} сообщ. за 15 с{', «' + sp.word + '»' if sp.word else ''})"
+        t0 = time.monotonic()
         try:
-            clip = await self.tw.create_clip(info["id"])
-            ready = await self.tw.clip_ready(clip.id)
-            if ready is None:
-                await self.notify(login, "processing", f"{head}\n⚠️ Twitch не успел обработать клип — возможно, эфир на паузе.")
-                return
-            extra = f" · эфир {fmt_time(ready['vod_offset'])}" if ready.get("vod_offset") is not None else ""
-            self.store.count_clip(login)
-            await self.tg.send(self.store.owner, f"{head}\nКлип: {ready.get('url') or clip.url}{extra}")
+            first = await self.tw.create_clip(info["id"], CLIP_LEN)
+            ready = await self.tw.clip_ready(first.id)
         except TwitchError as e:
             await self.notify(login, str(e), f"⚠️ {name}: клип не получился — {e}")
+            return
+        if ready is None:
+            await self.notify(login, "processing", f"{head}\n⚠️ Twitch не успел обработать клип — возможно, эфир на паузе.")
+            return
+        self.store.count_clip(login)
+        lines = [head]
+        off = ready.get("vod_offset")
+        if off is not None:
+            moment = float(off) + float(ready.get("duration") or CLIP_LEN)
+            rec = f"\nЗапись эфира с минуты до момента: {vod_link(ready['video_id'], off)}" if ready.get("video_id") else ""
+            lines.append(f"Момент в эфире: {fmt_time(moment)}{rec}")
+        lines.append(f"① Минута до: {ready.get('url') or first.url}")
+        lines.append("② Минута после — пришлю через минуту")
+        msg_id = await self.tg.send(self.store.owner, "\n".join(lines))
+
+        await asyncio.sleep(max(0.0, t0 + self.after_delay - time.monotonic()))
+        try:
+            second = await self.tw.create_clip(info["id"], CLIP_LEN)
+            ready2 = await self.tw.clip_ready(second.id)
+        except TwitchError as e:
+            await self.tg.send(self.store.owner, f"② Минута после не получилась — {e}", reply_to=msg_id)
+            return
+        if ready2 is None:
+            await self.tg.send(self.store.owner, "② Twitch не успел обработать клип «минута после».", reply_to=msg_id)
+            return
+        self.store.count_clip(login)
+        await self.tg.send(self.store.owner, f"② Минута после: {ready2.get('url') or second.url}", reply_to=msg_id)
 
     async def notify(self, login: str, kind: str, text: str) -> None:
         """Ошибки одного вида по каналу — не чаще раза в 30 минут."""
@@ -261,7 +296,7 @@ class ClipBot:
         await self._num(chat_id, arg, "threshold", 1.5, 10, float, "Порог всплеска (во сколько раз чаще обычного)")
 
     async def cmd_cooldown(self, chat_id, arg) -> None:
-        await self._num(chat_id, arg, "cooldown_min", 1, 60, int, "Пауза между клипами канала, минут")
+        await self._num(chat_id, arg, "cooldown_min", 2, 60, int, "Пауза между моментами канала, минут")
 
     async def cmd_minmsgs(self, chat_id, arg) -> None:
         await self._num(chat_id, arg, "min_msgs", 3, 500, int, "Минимум сообщений за 15 секунд")

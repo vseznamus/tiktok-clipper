@@ -12,7 +12,7 @@ import pytest
 pytest.importorskip("aiohttp")  # только для поддельных серверов в тесте; самому боту сторонние пакеты не нужны
 from aiohttp import web  # noqa: E402
 
-from clipbot.bot import ClipBot  # noqa: E402
+from clipbot.bot import ClipBot, vod_link  # noqa: E402
 from clipbot.spike import ChannelChat  # noqa: E402
 from clipbot.store import Store  # noqa: E402
 from clipbot.telegram import Telegram  # noqa: E402
@@ -65,6 +65,8 @@ def test_parse_helpers():
     line = "@badge-info=;color=#FF0000 :vasya!vasya@vasya.tmi.twitch.tv PRIVMSG #5opka :KEKW ну ты даёшь\r\n"
     assert parse_privmsg(line) == ("5opka", "KEKW ну ты даёшь")
     assert parse_privmsg(":tmi.twitch.tv 001 me :Welcome") is None
+    assert vod_link("5", 63) == "https://www.twitch.tv/videos/5?t=1m3s"
+    assert vod_link("5", 7384) == "https://www.twitch.tv/videos/5?t=2h3m4s"
     u = auth_url("cid", "http://localhost", "st")
     assert "scope=clips%3Aedit+chat%3Aread" in u and "client_id=cid" in u and "state=st" in u
 
@@ -94,6 +96,8 @@ class Fake:
         self.irc_writers: list[asyncio.StreamWriter] = []
         self.clip_status = {"77": 202, "88": 403}
         self.tokens_issued = 0
+        self.clip_requests: list[dict] = []
+        self.offline_from = 0
         self.uid = 0
 
     # Telegram
@@ -109,6 +113,7 @@ class Fake:
             return web.json_response({"ok": True, "result": ups})
         if method == "sendMessage":
             self.sent.append(body)
+            return web.json_response({"ok": True, "result": {"message_id": len(self.sent)}})
         return web.json_response({"ok": True, "result": True})
 
     def say(self, chat_id: int, text: str):
@@ -135,13 +140,19 @@ class Fake:
         return web.json_response({"data": data})
 
     async def clips_post(self, req):
+        self.clip_requests.append(dict(req.query))
         st = self.clip_status.get(req.query["broadcaster_id"], 404)
+        if self.offline_from and len(self.clip_requests) >= self.offline_from:
+            st = 404                                            # эфир закончился
         if st != 202:
             return web.json_response({"message": "nope"}, status=st)
-        return web.json_response({"data": [{"id": "Clip1", "edit_url": "https://clips.twitch.tv/Clip1/edit"}]}, status=202)
+        cid = f"Clip{len(self.clip_requests)}"
+        return web.json_response({"data": [{"id": cid, "edit_url": f"https://clips.twitch.tv/{cid}/edit"}]}, status=202)
 
     async def clips_get(self, req):
-        return web.json_response({"data": [{"id": req.query["id"], "url": "https://clips.twitch.tv/Clip1", "vod_offset": 3723}]})
+        cid = req.query["id"]
+        return web.json_response({"data": [{"id": cid, "url": f"https://clips.twitch.tv/{cid}", "video_id": "999",
+                                            "vod_offset": 3663, "duration": 60}]})
 
     # IRC
     async def irc(self, reader, writer):
@@ -202,6 +213,7 @@ async def _end_to_end(tmp_path):
     tw.clip_ready = functools.partial(Twitch.clip_ready, tw, step=0.05)
     chat = Chat(tw, None, host="127.0.0.1", port=irc_port, use_tls=False)
     bot = ClipBot(store, tg, tw, "13572468", chat=chat, clock=lambda: now[0])
+    bot.after_delay = 0.3
     run = asyncio.create_task(bot.run(stop))
     try:
         # чужой человек без кода — бот не привязывается
@@ -255,8 +267,8 @@ async def _end_to_end(tmp_path):
         fake.say(7, "/threshold 2,5")
         await wait_for(lambda: "✅ Порог" in fake.texts()[-1])
         assert bot.chats["5opka"].threshold == 2.5
-        fake.say(7, "/cooldown 999")
-        await wait_for(lambda: "число от 1 до 60" in fake.texts()[-1])
+        fake.say(7, "/cooldown 1")
+        await wait_for(lambda: "число от 2 до 60" in fake.texts()[-1])
 
         # всплеск → клип → ссылка в Телеграм
         sent_before = len(fake.sent)
@@ -267,13 +279,34 @@ async def _end_to_end(tmp_path):
         now[0] = 20_194.9
         await bot.tick()
         await wait_for(lambda: len(fake.sent) > sent_before)
-        msg = fake.texts()[-1]
+        first = fake.sent[-1]
+        msg = first["text"]
         assert msg.startswith("🔥 5opka — чат ×") and "«KEKW»" in msg
-        assert "Клип: https://clips.twitch.tv/Clip1 · эфир 1:02:03" in msg
-        assert store.channels()["5opka"]["clips"] == 1
-        await bot.tick()                                         # пауза между клипами — второго нет
-        await asyncio.sleep(0.2)
-        assert len(fake.sent) == sent_before + 1
+        assert "Момент в эфире: 1:02:03" in msg                  # начало клипа 1:01:03 + 60 с
+        assert "Запись эфира с минуты до момента: https://www.twitch.tv/videos/999?t=1h1m3s" in msg
+        assert "① Минута до: https://clips.twitch.tv/Clip1" in msg and "② Минута после — пришлю через минуту" in msg
+        assert fake.clip_requests[0] == {"broadcaster_id": "77", "duration": "60"}
+        await bot.tick()                                         # пауза между моментами — новых клипов нет
+        # через «минуту» (в тесте — 0,3 с) — второй клип ответом на первое сообщение
+        await wait_for(lambda: len(fake.sent) > sent_before + 1)
+        second = fake.sent[-1]
+        assert second["text"] == "② Минута после: https://clips.twitch.tv/Clip2"
+        assert second["reply_parameters"]["message_id"] == len(fake.sent) - 1
+        assert len(fake.clip_requests) == 2 and fake.clip_requests[1]["duration"] == "60"
+        assert store.channels()["5opka"]["clips"] == 2
+        await asyncio.sleep(0.4)
+        assert len(fake.sent) == sent_before + 2
+
+        # эфир закончился до «минуты после» — понятный ответ
+        fake.offline_from = 4
+        c.last_clip = -1e18
+        steady(c, 20_400, 180)
+        steady(c, 20_580, 15, per_sec=5, text="KEKW")
+        now[0] = 20_594.9
+        await bot.tick()
+        await wait_for(lambda: "② Минута после не получилась — канал не в эфире" in fake.texts()[-1])
+        assert store.channels()["5opka"]["clips"] == 3
+        fake.offline_from = 0
 
         # канал без клипов → понятная ошибка, повтор не спамит
         n = bot.chats["noclips"]
@@ -292,7 +325,7 @@ async def _end_to_end(tmp_path):
         await wait_for(lambda: "на паузе" in fake.texts()[-1])
         assert store.settings()["paused"] is True
         fake.say(7, "/list")
-        await wait_for(lambda: "клипов: 1" in fake.texts()[-1])
+        await wait_for(lambda: "клипов: 3" in fake.texts()[-1])
         fake.say(7, "/del 5opka")
         await wait_for(lambda: "Больше не слежу за 5opka" in fake.texts()[-1])
         await wait_for(lambda: "PART #5opka" in fake.irc_lines)

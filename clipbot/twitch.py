@@ -126,9 +126,11 @@ class Twitch:
         data = body.get("data") or []
         return data[0] if data else None
 
-    async def create_clip(self, broadcaster_id: str) -> Clip:
-        """Клип последних секунд эфира — как кнопка «Клип» в плеере. Обработка у Twitch занимает до ~15 с."""
-        st, body = await self.helix("POST", "clips", {"broadcaster_id": broadcaster_id, "has_delay": "false"})
+    async def create_clip(self, broadcaster_id: str, duration: float = 60) -> Clip:
+        """Клип последних `duration` секунд эфира (Twitch: 5–60 с) — как кнопка «Клип» в плеере.
+        Обработка у Twitch занимает до ~15 с."""
+        st, body = await self.helix("POST", "clips", {"broadcaster_id": broadcaster_id,
+                                                      "duration": f"{max(5.0, min(60.0, duration)):g}"})
         if st == 202:
             d = (body.get("data") or [{}])[0]
             cid = d.get("id", "")
