@@ -48,6 +48,7 @@ HELP = (
 
 CLIP_LEN = 60       # секунд в клипе — максимум у Twitch
 CENTER_AFTER = 30   # через сколько секунд после всплеска делать минутный клип, чтобы момент был посередине
+EDIT_LABEL = "✂️ Редактор клипа (субтитры, обрезка; ссылка живёт 24 ч)"
 VC_WINDOW = 150     # клипы зрителей за последние 2,5 минуты — один момент
 TUNE_MIN, TUNE_MAX = 0.7, 2.0  # пределы поправки порога канала по оценкам 👍/👎
 
@@ -167,6 +168,8 @@ class ClipBot:
             return
         self.store.count_clip(login)
         lines = [head, f"Клип (минута, момент посередине): {ready.get('url') or clip.url}"]
+        if clip.edit_url:
+            lines.append(f"{EDIT_LABEL}: {clip.edit_url}")
         off = ready.get("vod_offset")
         if off is not None:
             moment = float(off) + float(ready.get("duration") or CLIP_LEN) - CENTER_AFTER
@@ -201,6 +204,8 @@ class ClipBot:
             rec = f"\nЗапись эфира с минуты до момента: {vod_link(ready['video_id'], off)}" if ready.get("video_id") else ""
             lines.append(f"Момент в эфире: {fmt_time(moment)}{rec}")
         lines.append(f"① Минута до: {ready.get('url') or first.url}")
+        if first.edit_url:
+            lines.append(f"   {EDIT_LABEL}: {first.edit_url}")
         lines.append("② Минута после — пришлю через минуту")
         msg_id = await self.tg.send(self.store.owner, "\n".join(lines), buttons=feedback_buttons(login))
         self.last_msg[login] = (self.wall(), msg_id)
@@ -216,7 +221,8 @@ class ClipBot:
             await self.tg.send(self.store.owner, "② Twitch не успел обработать клип «минута после».", reply_to=msg_id)
             return
         self.store.count_clip(login)
-        await self.tg.send(self.store.owner, f"② Минута после: {ready2.get('url') or second.url}", reply_to=msg_id)
+        edit2 = f"\n   {EDIT_LABEL}: {second.edit_url}" if second.edit_url else ""
+        await self.tg.send(self.store.owner, f"② Минута после: {ready2.get('url') or second.url}{edit2}", reply_to=msg_id)
 
     # ------------------------------------------------------------ клипы зрителей
     async def watch_once(self) -> None:

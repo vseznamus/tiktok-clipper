@@ -339,6 +339,7 @@ async def _end_to_end(tmp_path):
         msg = centered["text"]
         assert msg.startswith("🔥 5opka — чат ×") and "от 60 чел." in msg and "волна «kekw» ×60" in msg
         assert "Клип (минута, момент посередине): https://clips.twitch.tv/Clip1" in msg
+        assert "✂️ Редактор клипа (субтитры, обрезка; ссылка живёт 24 ч): https://clips.twitch.tv/Clip1/edit" in msg
         kb = centered["reply_markup"]["inline_keyboard"][0]
         assert [b["callback_data"] for b in kb] == ["fb:1:5opka", "fb:0:5opka"]
         assert "Момент в эфире: 1:01:33" in msg                  # клип 1:01:03–1:02:03, момент — его середина
@@ -404,12 +405,14 @@ async def _end_to_end(tmp_path):
         assert "Момент в эфире: 1:02:03" in msg                  # начало клипа 1:01:03 + 60 с
         assert "Запись эфира с минуты до момента: https://www.twitch.tv/videos/999?t=1h1m3s" in msg
         assert "① Минута до: https://clips.twitch.tv/Clip1" in msg and "② Минута после — пришлю через минуту" in msg
+        assert "https://clips.twitch.tv/Clip1/edit" in msg
         assert fake.clip_requests[0] == {"broadcaster_id": "77", "duration": "60"}
         await bot.tick()                                         # пауза между моментами — новых клипов нет
         # через «минуту» (в тесте — 0,3 с) — второй клип ответом на первое сообщение
         await wait_for(lambda: len(fake.sent) > sent_before + 1)
         second = fake.sent[-1]
-        assert second["text"] == "② Минута после: https://clips.twitch.tv/Clip2"
+        assert second["text"].startswith("② Минута после: https://clips.twitch.tv/Clip2\n")
+        assert second["text"].endswith("https://clips.twitch.tv/Clip2/edit")
         assert second["reply_parameters"]["message_id"] == len(fake.sent) - 1
         assert len(fake.clip_requests) == 2 and fake.clip_requests[1]["duration"] == "60"
         assert store.channels()["5opka"]["clips"] == 3
