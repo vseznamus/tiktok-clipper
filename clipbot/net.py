@@ -56,7 +56,7 @@ def _do(method, url, params, form, json, headers, timeout) -> Response:
         raise ConnectionError(str(e)) from e
 
 
-async def request(method: str, url: str, *, params: dict | None = None, form: dict | None = None,
+async def request(method: str, url: str, *, params: dict | list | None = None, form: dict | None = None,
                   json: dict | None = None, headers: dict | None = None, timeout: float = 30) -> Response:
     """Сетевые ошибки — OSError (ConnectionError, таймаут); ответы 4xx/5xx — обычный Response."""
     return await asyncio.to_thread(_do, method, url, params, form, json, headers, timeout)

@@ -109,7 +109,7 @@ class Twitch:
         return self.store.twitch()["access"]
 
     # ------------------------------------------------------------ Helix
-    async def helix(self, method: str, path: str, params: dict | None = None) -> tuple[int, dict]:
+    async def helix(self, method: str, path: str, params: dict | list | None = None) -> tuple[int, dict]:
         for attempt in range(2):
             h = {"Client-Id": self.client_id, "Authorization": "Bearer " + await self.token()}
             r = await request(method, f"{self.api}/{path}", params=params, headers=h)
@@ -144,6 +144,25 @@ class Twitch:
             raise TwitchError("Twitch просит подождать (слишком много клипов)")
         raise TwitchError(f"Twitch ответил {st}: {msg[:120]}")
 
+    async def live(self, user_ids: list[str]) -> set[str]:
+        """Какие из каналов сейчас в эфире (официальный Get Streams, до 100 за раз)."""
+        out: set[str] = set()
+        for i in range(0, len(user_ids), 100):
+            params = [("user_id", u) for u in user_ids[i:i + 100]] + [("first", "100")]
+            st, body = await self.helix("GET", "streams", params)
+            if st != 200:
+                raise TwitchError(f"Twitch ответил {st} на список эфиров")
+            out |= {d.get("user_id", "") for d in body.get("data") or []}
+        return out
+
+    async def recent_clips(self, broadcaster_id: str, since: float) -> list[dict]:
+        """Клипы канала, созданные после since (unix-время) — их делают зрители (официальный Get Clips)."""
+        started = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(since))
+        st, body = await self.helix("GET", "clips", {"broadcaster_id": broadcaster_id, "started_at": started, "first": "20"})
+        if st != 200:
+            raise TwitchError(f"Twitch ответил {st} на список клипов")
+        return body.get("data") or []
+
     async def clip_ready(self, clip_id: str, wait: float = 20.0, step: float = 3.0) -> dict | None:
         """Ждёт, пока Twitch обработает клип; None — не обработался (такое бывает, если эфир на паузе)."""
         t0 = time.monotonic()
@@ -158,15 +177,17 @@ class Twitch:
 
 # ------------------------------------------------------------ чат (IRC, только чтение)
 
-def parse_privmsg(line: str) -> tuple[str, str] | None:
-    """«@tags :ник!ник@ник.tmi.twitch.tv PRIVMSG #канал :текст» → (канал, текст)."""
+def parse_privmsg(line: str) -> tuple[str, str, str] | None:
+    """«@tags :ник!ник@ник.tmi.twitch.tv PRIVMSG #канал :текст» → (канал, текст, ник автора)."""
     if " PRIVMSG #" not in line:
         return None
-    rest = line.split(" PRIVMSG #", 1)[1]
+    head, rest = line.split(" PRIVMSG #", 1)
     if " :" not in rest:
         return None
     ch, text = rest.split(" :", 1)
-    return ch.strip().lower(), text.rstrip("\r\n")
+    prefix = head.rsplit(" :", 1)[-1].lstrip(":") if " :" in head or head.startswith(":") else ""
+    user = prefix.split("!", 1)[0].lower() if "!" in prefix else ""
+    return ch.strip().lower(), text.rstrip("\r\n"), user
 
 
 class Chat:
@@ -247,7 +268,7 @@ class Chat:
                     raise ConnectionError("переподключение с новым токеном")
                 m = parse_privmsg(line)
                 if m:
-                    self.on_message(m[0], m[1], time.time())
+                    self.on_message(m[0], m[1], time.time(), m[2])
         except asyncio.TimeoutError as e:
             raise ConnectionError("чат молчит — переподключаюсь") from e
         finally:

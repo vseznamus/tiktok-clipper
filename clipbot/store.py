@@ -6,7 +6,7 @@ import os
 import threading
 from pathlib import Path
 
-DEFAULTS = {"threshold": 3.0, "cooldown_min": 3, "min_msgs": 15, "paused": False, "clips": 1}
+DEFAULTS = {"threshold": 3.0, "cooldown_min": 3, "min_msgs": 15, "paused": False, "clips": 1, "vclips": 2}
 
 
 class Store:
@@ -51,6 +51,16 @@ class Store:
         ok = self.data["channels"].pop(login, None) is not None
         self.save()
         return ok
+
+    def rate(self, login: str, good: bool, tune: float) -> None:
+        """Оценка клипа 👍/👎 и новая поправка порога канала."""
+        ch = self.data["channels"].get(login)
+        if ch is None:
+            return
+        k = "good" if good else "bad"
+        ch[k] = ch.get(k, 0) + 1
+        ch["tune"] = tune
+        self.save()
 
     def count_clip(self, login: str) -> None:
         if login in self.data["channels"]:

@@ -6,6 +6,7 @@ import functools
 import json
 import os
 import stat
+import time
 
 import pytest
 
@@ -21,20 +22,52 @@ from clipbot.twitch import Chat, Twitch, auth_url, login_of, parse_code, parse_p
 
 # ------------------------------------------------------------------ всплески
 
-def steady(c: ChannelChat, t0: int, secs: int, per_sec: int = 1, text: str = "привет всем") -> None:
+def steady(c: ChannelChat, t0: int, secs: int, per_sec: int = 1, text: str = "привет всем", users: int = 60) -> None:
+    """Чат: per_sec сообщений в секунду от users разных зрителей по кругу."""
     for s in range(secs):
         for k in range(per_sec):
-            c.add(t0 + s + k / (per_sec + 1), text)
+            c.add(t0 + s + k / (per_sec + 1), text, f"viewer{(s * per_sec + k) % users}")
 
 
 def test_spike_detects_burst_with_word():
     c = ChannelChat(threshold=3, min_msgs=15, cooldown=180)
     steady(c, 1000, 180)                                # 15 сообщений за окно — обычный темп
     assert c.check(1179.5) is None
-    steady(c, 1180, 15, per_sec=5, text="KEKW ахах")    # 75 сообщений с реакциями
+    steady(c, 1180, 15, per_sec=5, text="KEKW ахах")    # 75 сообщений с реакциями от 60 человек
     sp = c.check(1194.9)
-    assert sp is not None and sp.msgs == 75 and sp.ratio >= 5
+    assert sp is not None and sp.msgs == 75 and sp.authors == 60 and sp.ratio >= 3
     assert sp.word in ("KEKW", "ахах")
+    assert sp.wave == "kekw ахах" and sp.wave_users == 60       # волна одинаковых сообщений
+
+
+def test_spammer_is_not_a_spike_but_many_people_are():
+    c = ChannelChat(threshold=3, min_msgs=15, cooldown=180)
+    steady(c, 0, 180, users=15)                         # обычно: 15 сообщений от 15 человек за окно
+    for i in range(75):                                 # один зритель строчит 75 сообщений за 15 с
+        c.add(180 + i * 0.2, f"купите мой канал {i}", "spammer")
+    assert c.check(194.9) is None
+    for i in range(75):                                 # и чат-боты не в счёт
+        c.add(195 + i * 0.2, "!команды", "nightbot")
+    assert c.check(209.9) is None
+    c2 = ChannelChat(threshold=3, min_msgs=15, cooldown=180)
+    steady(c2, 0, 180, users=15)
+    texts = ["ахахах", "ору", "это база", "лол", "что он сделал", "жесть", "ааааа", "KEKW"]
+    for i in range(75):                                 # 60 разных людей пишут разное — всплеск, но не волна
+        c2.add(180 + i * 0.2, texts[i % len(texts)] + f" {i}", f"p{i % 60}")
+    sp = c2.check(194.9)
+    assert sp is not None and sp.authors == 60 and sp.wave is None
+
+
+def test_wave_key_and_wave_threshold():
+    from clipbot.spike import wave_key
+    assert wave_key("KEKW KEKW KEKW") == "kekw"
+    assert wave_key("ахахаааааа") == wave_key("ахахааа")
+    c = ChannelChat(threshold=3, min_msgs=15, cooldown=180)
+    steady(c, 0, 180, users=15)
+    for i in range(60):                                 # 3 человека пишут «F» — не волна; 40 человек — волна
+        c.add(180 + i * 0.25, "F", f"f{i % 3}" if i < 20 else f"w{i}")
+    w, n = c.wave(194.9, 43)
+    assert w == "f" and n == 43
 
 
 def test_spike_needs_history_min_msgs_and_respects_cooldown():
@@ -63,7 +96,8 @@ def test_parse_helpers():
     assert parse_code("abcdefghijklmnopqrstuvwxyz0123") == ("abcdefghijklmnopqrstuvwxyz0123", None)
     assert parse_code("привет") == (None, None)
     line = "@badge-info=;color=#FF0000 :vasya!vasya@vasya.tmi.twitch.tv PRIVMSG #5opka :KEKW ну ты даёшь\r\n"
-    assert parse_privmsg(line) == ("5opka", "KEKW ну ты даёшь")
+    assert parse_privmsg(line) == ("5opka", "KEKW ну ты даёшь", "vasya")
+    assert parse_privmsg(":Petya!petya@petya.tmi.twitch.tv PRIVMSG #5opka :привет") == ("5opka", "привет", "petya")
     assert parse_privmsg(":tmi.twitch.tv 001 me :Welcome") is None
     assert vod_link("5", 63) == "https://www.twitch.tv/videos/5?t=1m3s"
     assert vod_link("5", 7384) == "https://www.twitch.tv/videos/5?t=2h3m4s"
@@ -99,6 +133,9 @@ class Fake:
         self.clip_requests: list[dict] = []
         self.offline_from = 0
         self.uid = 0
+        self.calls: list[tuple] = []
+        self.live: set[str] = set()
+        self.viewer_clips: dict[str, list] = {}
 
     # Telegram
     async def tg(self, req):
@@ -114,7 +151,14 @@ class Fake:
         if method == "sendMessage":
             self.sent.append(body)
             return web.json_response({"ok": True, "result": {"message_id": len(self.sent)}})
+        if method in ("answerCallbackQuery", "editMessageReplyMarkup"):
+            self.calls.append((method, body))
         return web.json_response({"ok": True, "result": True})
+
+    def press(self, from_id: int, message_id: int, data: str):
+        self.uid += 1
+        self.updates.append({"update_id": self.uid, "callback_query": {"id": f"cb{self.uid}", "from": {"id": from_id},
+                             "message": {"message_id": message_id, "chat": {"id": 7}}, "data": data}})
 
     def say(self, chat_id: int, text: str):
         self.uid += 1
@@ -149,7 +193,14 @@ class Fake:
         cid = f"Clip{len(self.clip_requests)}"
         return web.json_response({"data": [{"id": cid, "edit_url": f"https://clips.twitch.tv/{cid}/edit"}]}, status=202)
 
+    async def streams(self, req):
+        ids = req.query.getall("user_id")
+        return web.json_response({"data": [{"user_id": i, "type": "live"} for i in ids if i in self.live]})
+
     async def clips_get(self, req):
+        if "id" not in req.query:                               # список клипов канала (их делают зрители)
+            assert "started_at" in req.query
+            return web.json_response({"data": self.viewer_clips.get(req.query["broadcaster_id"], [])})
         cid = req.query["id"]
         return web.json_response({"data": [{"id": cid, "url": f"https://clips.twitch.tv/{cid}", "video_id": "999",
                                             "vod_offset": 3663, "duration": 60}]})
@@ -196,6 +247,7 @@ async def _end_to_end(tmp_path):
     app.router.add_get("/helix/users", fake.users)
     app.router.add_post("/helix/clips", fake.clips_post)
     app.router.add_get("/helix/clips", fake.clips_get)
+    app.router.add_get("/helix/streams", fake.streams)
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, "127.0.0.1", 0)
@@ -214,6 +266,7 @@ async def _end_to_end(tmp_path):
     chat = Chat(tw, None, host="127.0.0.1", port=irc_port, use_tls=False)
     bot = ClipBot(store, tg, tw, "13572468", chat=chat, clock=lambda: now[0])
     bot.after_delay = 0.3
+    bot.watch_every = 0.2
     bot.center_delay = 0.3
     run = asyncio.create_task(bot.run(stop))
     try:
@@ -282,15 +335,55 @@ async def _end_to_end(tmp_path):
         await asyncio.sleep(0.1)
         assert fake.clip_requests == []                          # ещё ждёт 30 секунд
         await wait_for(lambda: len(fake.sent) > sent_before)
-        msg = fake.texts()[-1]
-        assert msg.startswith("🔥 5opka — чат ×") and "«KEKW»" in msg
+        centered = fake.sent[-1]
+        msg = centered["text"]
+        assert msg.startswith("🔥 5opka — чат ×") and "от 60 чел." in msg and "волна «kekw» ×60" in msg
         assert "Клип (минута, момент посередине): https://clips.twitch.tv/Clip1" in msg
+        kb = centered["reply_markup"]["inline_keyboard"][0]
+        assert [b["callback_data"] for b in kb] == ["fb:1:5opka", "fb:0:5opka"]
         assert "Момент в эфире: 1:01:33" in msg                  # клип 1:01:03–1:02:03, момент — его середина
         assert "Запись эфира с начала клипа: https://www.twitch.tv/videos/999?t=1h1m3s" in msg
         assert fake.clip_requests == [{"broadcaster_id": "77", "duration": "60"}]
         assert store.channels()["5opka"]["clips"] == 1
         fake.say(7, "/status")
         await wait_for(lambda: "один на минуту, момент посередине" in fake.texts()[-1])
+        assert "клипнули 2 чел. за 2 мин" in fake.texts()[-1]
+
+        # 👎 под клипом: порог канала растёт; чужое нажатие не учитывается; повторное — «уже учтено»
+        mid = len(fake.sent) - 1                                 # номер сообщения с клипом (сообщения считаются с 1)
+        fake.press(500, mid, "fb:0:5opka")
+        await wait_for(lambda: any(m == "answerCallbackQuery" and b["text"] == "Это личный бот" for m, b in fake.calls))
+        fake.press(7, mid, "fb:0:5opka")
+        await wait_for(lambda: any(m == "editMessageReplyMarkup" for m, b in fake.calls))
+        ans = [b["text"] for m, b in fake.calls if m == "answerCallbackQuery"][-1]
+        assert ans.startswith("👎 Учту: для 5opka буду клипать реже") and "×2,8" in ans
+        edit = [b for m, b in fake.calls if m == "editMessageReplyMarkup"][-1]
+        assert edit["message_id"] == mid and edit["reply_markup"]["inline_keyboard"][0][0]["text"] == "👎 учтено"
+        assert store.channels()["5opka"]["tune"] == 1.12 and store.channels()["5opka"]["bad"] == 1
+        assert bot.thr("5opka") == 2.8
+        fake.press(7, mid, "fb:done")
+        await wait_for(lambda: [b["text"] for m, b in fake.calls if m == "answerCallbackQuery"][-1] == "Уже учтено")
+        fake.press(7, mid, "fb:1:5opka")                       # 👍 возвращает порог вниз
+        await wait_for(lambda: store.channels()["5opka"].get("good") == 1)
+        assert store.channels()["5opka"]["tune"] == round(1.12 * 0.95, 3)
+
+        # клипы зрителей: двое клипнули тот же момент → ответ на сообщение с нашим клипом; свои клипы не в счёт
+        nowz = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - 20))
+        fake.viewer_clips["77"] = [
+            {"id": "V1", "url": "https://clips.twitch.tv/V1", "creator_id": "501", "creator_name": "a", "created_at": nowz,
+             "view_count": 5, "title": "ОРУ", "video_id": "999", "vod_offset": 3700},
+            {"id": "V2", "url": "https://clips.twitch.tv/V2", "creator_id": "502", "creator_name": "b", "created_at": nowz,
+             "view_count": 40, "title": "", "video_id": "999", "vod_offset": 3702},
+            {"id": "MINE", "url": "https://clips.twitch.tv/MINE", "creator_id": "1", "creator_name": "me", "created_at": nowz,
+             "view_count": 99, "video_id": "999", "vod_offset": 3690}]
+        fake.live = {"77"}
+        await wait_for(lambda: "Зрители тоже клипнули" in fake.texts()[-1])
+        vc = fake.sent[-1]
+        assert vc["reply_parameters"]["message_id"] == mid and "2 клип. от 2 чел." in vc["text"]
+        assert vc["text"].index("V2") < vc["text"].index("V1") and "MINE" not in vc["text"] and "«ОРУ»" in vc["text"]
+        await asyncio.sleep(0.6)
+        assert sum("Зрители тоже клипнули" in t for t in fake.texts()) == 1  # тот же момент — один раз
+        fake.live = set()
 
         # /clips 2: два клипа — «минута до» сразу и «минута после» через минуту
         fake.say(7, "/clips 3")
@@ -307,7 +400,7 @@ async def _end_to_end(tmp_path):
         await wait_for(lambda: len(fake.sent) > sent_before)
         first = fake.sent[-1]
         msg = first["text"]
-        assert msg.startswith("🔥 5opka — чат ×") and "«KEKW»" in msg
+        assert msg.startswith("🔥 5opka — чат ×") and "волна «kekw»" in msg
         assert "Момент в эфире: 1:02:03" in msg                  # начало клипа 1:01:03 + 60 с
         assert "Запись эфира с минуты до момента: https://www.twitch.tv/videos/999?t=1h1m3s" in msg
         assert "① Минута до: https://clips.twitch.tv/Clip1" in msg and "② Минута после — пришлю через минуту" in msg
@@ -343,6 +436,16 @@ async def _end_to_end(tmp_path):
             now[0] = 30_194.9 + k * 1000
             await bot.tick()
             await asyncio.sleep(0.3)
+        fake.viewer_clips["88"] = [
+            {"id": f"N{i}", "url": f"https://clips.twitch.tv/N{i}", "creator_id": f"6{i}", "created_at": time.strftime(
+                "%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - 10)), "view_count": i, "video_id": "555", "vod_offset": 100}
+            for i in range(3)]
+        fake.live = {"88"}
+        await wait_for(lambda: "зрители клипают" in fake.texts()[-1])
+        alone = fake.texts()[-1]
+        assert alone.startswith("🎬 NOCLIPS — зрители клипают: 3 клип. от 3 чел.") and "videos/555?t=1m10s" in alone
+        assert "reply_parameters" not in fake.sent[-1]
+        fake.live = set()
         errs = [t for t in fake.texts() if "запретил клипы" in t]
         assert len(errs) == 1 and errs[0].startswith("⚠️ NOCLIPS")
 

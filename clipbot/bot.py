@@ -6,6 +6,7 @@ Twitch (от имени владельца), а ссылку присылает 
 from __future__ import annotations
 
 import asyncio
+import calendar
 import os
 import secrets
 import signal
@@ -22,6 +23,7 @@ COMMANDS = [
     ("login", "войти в Twitch"), ("threshold", "порог всплеска, например /threshold 3"),
     ("cooldown", "пауза между моментами канала, минут"), ("minmsgs", "минимум сообщений за 15 с"),
     ("clips", "1 — минута с моментом посередине, 2 — минута до и минута после"),
+    ("vclips", "сколько зрителей должны клипнуть, чтобы я написал (0 — выкл.)"),
     ("pause", "приостановить клипы"), ("resume", "продолжить"), ("status", "состояние"), ("help", "помощь"),
 ]
 HELP = (
@@ -35,6 +37,9 @@ HELP = (
     "/cooldown 3 — минут между моментами одного канала (2–60)\n"
     "/minmsgs 15 — минимум сообщений за 15 секунд\n"
     "/clips 1 — один клип: 30 с до момента и 30 с после; /clips 2 — два клипа: минута до и минута после\n"
+    "/vclips 2 — написать, когда за 2 минуты клипнули столько разных зрителей (0 — не следить)\n\n"
+    "Под каждым клипом — 👍 / 👎: по оценкам я сам подстраиваю порог для канала "
+    "(👎 — реже и точнее, 👍 — чаще).\n\n"
     "/pause, /resume — приостановить и продолжить\n"
     "/login — войти в Twitch заново\n"
     "/status — состояние бота"
@@ -43,6 +48,20 @@ HELP = (
 
 CLIP_LEN = 60       # секунд в клипе — максимум у Twitch
 CENTER_AFTER = 30   # через сколько секунд после всплеска делать минутный клип, чтобы момент был посередине
+VC_WINDOW = 150     # клипы зрителей за последние 2,5 минуты — один момент
+TUNE_MIN, TUNE_MAX = 0.7, 2.0  # пределы поправки порога канала по оценкам 👍/👎
+
+
+def parse_ts(s: str) -> float:
+    """«2026-11-02T18:47:39Z» → unix-время."""
+    try:
+        return float(calendar.timegm(time.strptime(s[:19], "%Y-%m-%dT%H:%M:%S")))
+    except (ValueError, TypeError):
+        return 0.0
+
+
+def feedback_buttons(login: str) -> list:
+    return [[("👍 Хороший", f"fb:1:{login}"), ("👎 Мимо", f"fb:0:{login}")]]
 
 
 def vod_link(video_id: str, sec) -> str:
@@ -58,10 +77,17 @@ def fmt_time(sec) -> str:
 
 
 class ClipBot:
-    def __init__(self, store: Store, tg: Telegram, tw: Twitch, pair_code: str, chat: Chat | None = None, clock=time.time):
+    def __init__(self, store: Store, tg: Telegram, tw: Twitch, pair_code: str, chat: Chat | None = None, clock=time.time,
+                 wall=time.time):
         self.store, self.tg, self.tw = store, tg, tw
         self.pair_code = pair_code
-        self.clock = clock
+        self.clock = clock      # время чата (в тестах — поддельное)
+        self.wall = wall        # настоящее время — для клипов зрителей (у них время создания из Twitch)
+        self.watch_every = 45.0                    # раз в сколько секунд смотреть клипы зрителей
+        self.vclips: dict[str, list] = {}          # канал → клипы зрителей за последние 10 минут
+        self.seen: set[str] = set()                # id уже учтённых клипов
+        self.vc_alert: dict[str, float] = {}       # когда последний раз писал про клипы зрителей канала
+        self.last_msg: dict[str, tuple] = {}       # канал → (время, номер сообщения) последнего клипа
         self.chat = chat or Chat(tw, self.on_message)
         if chat is not None:
             chat.on_message = self.on_message
@@ -85,10 +111,15 @@ class ClipBot:
             c.threshold, c.min_msgs, c.cooldown = float(st["threshold"]), int(st["min_msgs"]), float(st["cooldown_min"]) * 60
 
     # ------------------------------------------------------------ чат и клипы
-    def on_message(self, ch: str, text: str, t: float) -> None:
+    def on_message(self, ch: str, text: str, t: float, user: str = "") -> None:
         c = self.chats.get(ch)
         if c is not None:
-            c.add(t, text)
+            c.add(t, text, user)
+
+    def thr(self, login: str) -> float:
+        """Порог канала: общий × поправка по оценкам 👍/👎."""
+        tune = float(self.store.channels().get(login, {}).get("tune", 1.0))
+        return round(float(self.store.settings()["threshold"]) * tune, 2)
 
     async def tick(self) -> None:
         """Проверка всплесков (раз в 2 секунды)."""
@@ -96,7 +127,7 @@ class ClipBot:
             return
         now = self.clock()
         for login, c in list(self.chats.items()):
-            sp = c.check(now)
+            sp = c.check(now, self.thr(login))
             if sp:
                 c.last_clip = now
                 t = asyncio.create_task(self.make_clip(login, sp))
@@ -104,7 +135,12 @@ class ClipBot:
                 t.add_done_callback(self.tasks.discard)
 
     def _head(self, name: str, sp: Spike) -> str:
-        return f"🔥 {name} — чат ×{str(sp.ratio).replace('.', ',')} ({sp.msgs} сообщ. за 15 с{', «' + sp.word + '»' if sp.word else ''})"
+        who = f" от {sp.authors} чел." if sp.authors else ""
+        if sp.wave:
+            what = f", волна «{sp.wave}» ×{sp.wave_users}"
+        else:
+            what = f", «{sp.word}»" if sp.word else ""
+        return f"🔥 {name} — чат ×{str(sp.ratio).replace('.', ',')} ({sp.msgs} сообщ.{who} за 15 с{what})"
 
     async def make_clip(self, login: str, sp: Spike) -> None:
         if int(self.store.settings().get("clips", 1)) == 2:
@@ -136,7 +172,8 @@ class ClipBot:
             moment = float(off) + float(ready.get("duration") or CLIP_LEN) - CENTER_AFTER
             rec = f"\nЗапись эфира с начала клипа: {vod_link(ready['video_id'], off)}" if ready.get("video_id") else ""
             lines.append(f"Момент в эфире: {fmt_time(moment)}{rec}")
-        await self.tg.send(self.store.owner, "\n".join(lines))
+        mid = await self.tg.send(self.store.owner, "\n".join(lines), buttons=feedback_buttons(login))
+        self.last_msg[login] = (self.wall(), mid)
 
     async def make_pair(self, login: str, sp: Spike) -> None:
         """Два клипа по минуте подряд: «минута до» — сразу, «минута после» — через минуту.
@@ -165,7 +202,8 @@ class ClipBot:
             lines.append(f"Момент в эфире: {fmt_time(moment)}{rec}")
         lines.append(f"① Минута до: {ready.get('url') or first.url}")
         lines.append("② Минута после — пришлю через минуту")
-        msg_id = await self.tg.send(self.store.owner, "\n".join(lines))
+        msg_id = await self.tg.send(self.store.owner, "\n".join(lines), buttons=feedback_buttons(login))
+        self.last_msg[login] = (self.wall(), msg_id)
 
         await asyncio.sleep(max(0.0, t0 + self.after_delay - time.monotonic()))
         try:
@@ -179,6 +217,81 @@ class ClipBot:
             return
         self.store.count_clip(login)
         await self.tg.send(self.store.owner, f"② Минута после: {ready2.get('url') or second.url}", reply_to=msg_id)
+
+    # ------------------------------------------------------------ клипы зрителей
+    async def watch_once(self) -> None:
+        """Смотрит новые клипы зрителей на каналах в эфире; если за 2,5 минуты клипнули несколько разных людей — пишет."""
+        need = int(self.store.settings().get("vclips", 2))
+        if need <= 0 or self.store.settings().get("paused") or not self.store.owner or not self.store.twitch().get("access"):
+            return
+        ids = {info["id"]: login for login, info in self.store.channels().items() if info.get("id")}
+        if not ids:
+            return
+        live = await self.tw.live(list(ids))
+        now, me = self.wall(), str(self.store.twitch().get("user_id", ""))
+        for bid in live:
+            login = ids.get(bid)
+            if not login:
+                continue
+            for c in await self.tw.recent_clips(bid, now - 600):
+                if c.get("id") in self.seen or str(c.get("creator_id", "")) == me:
+                    continue  # свои клипы бота не считаем
+                self.seen.add(c["id"])
+                self.vclips.setdefault(login, []).append({**c, "ts": parse_ts(c.get("created_at", ""))})
+            lst = [c for c in self.vclips.get(login, []) if now - c["ts"] <= 600]
+            self.vclips[login] = lst
+            recent = [c for c in lst if now - c["ts"] <= VC_WINDOW]
+            people = {str(c.get("creator_id") or c.get("creator_name")) for c in recent}
+            gap = max(180.0, float(self.store.settings()["cooldown_min"]) * 60)
+            if len(people) >= need and now - self.vc_alert.get(login, -1e18) > gap:
+                self.vc_alert[login] = now
+                await self.viewer_alert(login, recent, len(people))
+
+    async def viewer_alert(self, login: str, recent: list, people: int) -> None:
+        info = self.store.channels().get(login) or {}
+        name = info.get("name") or login
+        top = sorted(recent, key=lambda c: -int(c.get("view_count") or 0))[:3]
+        links = "\n".join(f"• {c.get('url')}" + (f" — «{c.get('title')}»" if c.get("title") else "") for c in top)
+        best = top[0]
+        rec = ""
+        if best.get("video_id") and best.get("vod_offset") is not None:
+            rec = f"\nЗапись эфира: {vod_link(best['video_id'], max(0, int(best['vod_offset']) - 30))}"
+        last = self.last_msg.get(login)
+        if last and self.wall() - last[0] <= 240:
+            # момент уже прислан по чату — подтверждаем ответом на то сообщение
+            await self.tg.send(self.store.owner, f"🎬 Зрители тоже клипнули этот момент: {len(recent)} клип. от {people} чел.\n{links}",
+                               reply_to=last[1])
+            return
+        c = self.chats.get(login)
+        if c is not None:
+            c.last_clip = self.clock()  # чат не дублирует этот момент
+        await self.tg.send(self.store.owner,
+                           f"🎬 {name} — зрители клипают: {len(recent)} клип. от {people} чел. за 2 мин\n{links}{rec}")
+
+    # ------------------------------------------------------------ оценки 👍 / 👎
+    async def on_callback(self, q: dict) -> None:
+        data, qid = q.get("data") or "", q.get("id", "")
+        msg = q.get("message") or {}
+        if q.get("from", {}).get("id") != self.store.owner:
+            await self.tg.answer(qid, "Это личный бот")
+            return
+        if not data.startswith("fb:") or data == "fb:done":
+            await self.tg.answer(qid, "Уже учтено")
+            return
+        _, v, login = data.split(":", 2)
+        good = v == "1"
+        info = self.store.channels().get(login)
+        if info is None:
+            await self.tg.answer(qid, "Этого канала уже нет в списке")
+            return
+        tune = float(info.get("tune", 1.0))
+        tune = max(TUNE_MIN, tune * 0.95) if good else min(TUNE_MAX, tune * 1.12)
+        self.store.rate(login, good, round(tune, 3))
+        name = info.get("name") or login
+        await self.tg.answer(qid, (f"👍 Учту: для {name} буду клипать чуть чаще" if good else f"👎 Учту: для {name} буду клипать реже")
+                             + f" (порог ×{str(self.thr(login)).replace('.', ',')})")
+        if msg.get("message_id"):
+            await self.tg.set_buttons(msg["chat"]["id"], msg["message_id"], [[("👍 учтено" if good else "👎 учтено", "fb:done")]])
 
     async def notify(self, login: str, kind: str, text: str) -> None:
         """Ошибки одного вида по каналу — не чаще раза в 30 минут."""
@@ -221,7 +334,7 @@ class ClipBot:
         self.awaiting = None
         handler = {"/help": self.cmd_help, "/login": self.cmd_login, "/add": self.cmd_add, "/del": self.cmd_del,
                    "/list": self.cmd_list, "/threshold": self.cmd_threshold, "/cooldown": self.cmd_cooldown,
-                   "/minmsgs": self.cmd_minmsgs, "/clips": self.cmd_clips, "/pause": self.cmd_pause, "/resume": self.cmd_resume,
+                   "/minmsgs": self.cmd_minmsgs, "/clips": self.cmd_clips, "/vclips": self.cmd_vclips, "/pause": self.cmd_pause, "/resume": self.cmd_resume,
                    "/status": self.cmd_status}.get(cmd)
         if handler is None:
             await self.tg.send(chat_id, "Нет такой команды. /help — список.")
@@ -316,6 +429,7 @@ class ClipBot:
             c = self.chats.get(login)
             per_min = sum(c._window(now - k * 15)[1] for k in range(4)) if c else 0
             lines.append(f"• {info.get('name') or login} (twitch.tv/{login}) — клипов: {info.get('clips', 0)}, "
+                         f"оценки 👍{info.get('good', 0)} 👎{info.get('bad', 0)}, порог ×{str(self.thr(login)).replace('.', ',')}, "
                          f"чат сейчас: {per_min} сообщ./мин")
         await self.tg.send(chat_id, "\n".join(lines), KEYBOARD)
 
@@ -341,6 +455,9 @@ class ClipBot:
         await self._num(chat_id, arg, "clips", 1, 2, int,
                         "Клипов на момент (1 — минута с моментом посередине, 2 — минута до и минута после)")
 
+    async def cmd_vclips(self, chat_id, arg) -> None:
+        await self._num(chat_id, arg, "vclips", 0, 5, int, "Сколько зрителей должны клипнуть за 2 минуты (0 — не следить)")
+
     async def cmd_minmsgs(self, chat_id, arg) -> None:
         await self._num(chat_id, arg, "min_msgs", 3, 500, int, "Минимум сообщений за 15 секунд")
 
@@ -360,7 +477,8 @@ class ClipBot:
             f"Каналов: {len(self.store.channels())}\n"
             f"Клипы: {'на паузе' if st.get('paused') else 'включены'}\n"
             f"Порог: ×{st['threshold']} · минимум {st['min_msgs']} сообщ. за 15 с · пауза {st['cooldown_min']} мин\n"
-            f"Клипы: {'два по минуте (до и после)' if int(st.get('clips', 1)) == 2 else 'один на минуту, момент посередине'}"),
+            f"Клипы: {'два по минуте (до и после)' if int(st.get('clips', 1)) == 2 else 'один на минуту, момент посередине'}\n"
+            f"Клипы зрителей: {('пишу, когда клипнули ' + str(st.get('vclips', 2)) + ' чел. за 2 мин') if int(st.get('vclips', 2)) else 'не слежу'}"),
             KEYBOARD)
 
     # ------------------------------------------------------------ циклы
@@ -374,11 +492,13 @@ class ClipBot:
                     down = False
                 for u in ups:
                     offset = u["update_id"] + 1
-                    if "message" in u:
-                        try:
+                    try:
+                        if "message" in u:
                             await self.handle(u["message"])
-                        except Exception as e:  # noqa: BLE001 — одна неудачная команда не роняет бота
-                            print("ошибка команды:", e, flush=True)
+                        elif "callback_query" in u:
+                            await self.on_callback(u["callback_query"])
+                    except Exception as e:  # noqa: BLE001 — одна неудачная команда не роняет бота
+                        print("ошибка команды:", e, flush=True)
             except (OSError, asyncio.TimeoutError, RuntimeError) as e:
                 if not down:  # в журнал — один раз за сбой, чтобы он не разрастался
                     print("Телеграм недоступен:", e, flush=True)
@@ -393,12 +513,26 @@ class ClipBot:
             except Exception as e:  # noqa: BLE001
                 print("ошибка проверки:", e, flush=True)
 
+    async def watcher(self, stop: asyncio.Event) -> None:
+        down = False
+        while not stop.is_set():
+            await asyncio.sleep(self.watch_every)
+            try:
+                await self.watch_once()
+                down = False
+            except (TwitchError, OSError, asyncio.TimeoutError) as e:
+                if not down:
+                    print("клипы зрителей недоступны:", e, flush=True)
+                    down = True
+            except Exception as e:  # noqa: BLE001
+                print("ошибка клипов зрителей:", e, flush=True)
+
     async def run(self, stop: asyncio.Event) -> None:
         try:
             await self.tg.set_commands(COMMANDS)
         except (OSError, RuntimeError) as e:
             print("не удалось задать команды:", e, flush=True)
-        work = [asyncio.create_task(c) for c in (self.poll(stop), self.ticker(stop), self.chat.run(stop))]
+        work = [asyncio.create_task(c) for c in (self.poll(stop), self.ticker(stop), self.watcher(stop), self.chat.run(stop))]
         await stop.wait()                     # остановка (docker stop) — не ждём открытых соединений
         for t in work + list(self.tasks):
             t.cancel()
