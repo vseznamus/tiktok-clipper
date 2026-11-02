@@ -6,7 +6,7 @@ import os
 import threading
 from pathlib import Path
 
-DEFAULTS = {"threshold": 3.0, "cooldown_min": 3, "min_msgs": 15, "paused": False}
+DEFAULTS = {"threshold": 3.0, "cooldown_min": 3, "min_msgs": 15, "paused": False, "clips": 1}
 
 
 class Store:
